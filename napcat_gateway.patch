@@ -1,0 +1,163 @@
+diff --git a/hermes_cli/gateway.py b/hermes_cli/gateway.py
+index aede480b..a6d978d3 100644
+--- a/hermes_cli/gateway.py
++++ b/hermes_cli/gateway.py
+@@ -2724,6 +2724,35 @@ _PLATFORMS = [
+              "help": "OpenID to deliver cron results and notifications to."},
+         ],
+     },
++    {
++        "key": "napcat",
++        "label": "NapCat (QQ)",
++        "emoji": "🐧",
++        "token_var": "NAPCAT_HTTP_URL",
++        "setup_instructions": [
++            "1. 安装并运行 NapCat v4.18.1+（https://napneko.github.io）",
++            "2. 登录 QQ 账号后，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）和 WebSocket Server（默认端口 3001）",
++            "3. 将两个 Server 的 messagePostFormat 均设为 array",
++            "4. 如需 Token 鉴权，在两个 Server 中填写相同的 token 字段",
++        ],
++        "vars": [
++            {"name": "NAPCAT_HTTP_URL", "prompt": "NapCat HTTP API 地址", "password": False,
++             "help": "NapCat HTTP Server 地址，例如 http://127.0.0.1:3000"},
++            {"name": "NAPCAT_WS_URL", "prompt": "NapCat WebSocket 地址", "password": False,
++             "help": "NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3001"},
++            {"name": "NAPCAT_TOKEN", "prompt": "访问令牌（可选，留空跳过）", "password": True,
++             "help": "与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过"},
++            {"name": "NAPCAT_ALLOWED_USERS", "prompt": "允许私聊的 QQ 号（逗号分隔，留空则不限制）", "password": False,
++             "is_allowlist": True,
++             "help": "白名单：仅允许填写的 QQ 号私聊触发机器人，留空则所有人均可使用"},
++            {"name": "NAPCAT_GROUP_ALLOWED_USERS", "prompt": "允许在群聊中触发的 QQ 号（逗号分隔，留空则不限制）", "password": False,
++             "help": "群聊白名单：仅允许填写的 QQ 号在群聊中 @ 触发机器人，留空则群内所有人均可触发"},
++            {"name": "NAPCAT_ADMIN_USERS", "prompt": "管理员 QQ 号（逗号分隔，留空跳过）", "password": False,
++             "help": "拥有 /mute /kick /ban 等管理命令权限的 QQ 号，多个用英文逗号分隔"},
++            {"name": "NAPCAT_HOME_CHANNEL", "prompt": "默认投递目标（QQ 号或群号，留空跳过）", "password": False,
++             "help": "定时任务结果的默认投递目标：私聊填 QQ 号，群聊填 群号（群聊需加前缀 g:，例如 g:123456789）"},
++        ],
++    },
+     {
+         "key": "yuanbao",
+         "label": "Yuanbao",
+@@ -3592,6 +3621,113 @@ def _setup_qqbot():
+     print_info(f"  App ID: {credentials['app_id']}")
+ 
+ 
++def _setup_napcat():
++    """全中文交互式向导：NapCat (QQ via OneBot 11)。"""
++    platform = next(p for p in _PLATFORMS if p["key"] == "napcat")
++    emoji = platform["emoji"]
++
++    print()
++    print(color("  ─── 🐧 NapCat (QQ) 配置向导 ───", Colors.CYAN))
++
++    # ── 前置说明 ──
++    print()
++    for line in platform["setup_instructions"]:
++        print_info(f"  {line}")
++
++    # ── 已配置检测 ──
++    existing_http = get_env_value("NAPCAT_HTTP_URL")
++    if existing_http:
++        print()
++        print_success("NapCat 已配置。")
++        if not prompt_yes_no("  重新配置 NapCat？", False):
++            return
++
++    # ── 必填：HTTP API 地址 ──
++    print()
++    print_info("  NapCat HTTP Server 地址，例如 http://127.0.0.1:3000")
++    http_url = prompt("  NapCat HTTP API 地址", password=False)
++    if not http_url:
++        print_warning("  已跳过 — 缺少 HTTP 地址，NapCat 将无法正常工作。")
++        return
++    save_env_value("NAPCAT_HTTP_URL", http_url.strip().rstrip("/"))
++    print_success("  已保存 NAPCAT_HTTP_URL")
++
++    # ── 必填：WebSocket 地址 ──
++    print()
++    print_info("  NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3001")
++    ws_url = prompt("  NapCat WebSocket 地址", password=False)
++    if not ws_url:
++        print_warning("  已跳过 — 缺少 WebSocket 地址，NapCat 将无法接收消息。")
++        return
++    save_env_value("NAPCAT_WS_URL", ws_url.strip().rstrip("/"))
++    print_success("  已保存 NAPCAT_WS_URL")
++
++    # ── 可选：访问令牌 ──
++    print()
++    print_info("  与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过")
++    token = prompt("  访问令牌（可选，留空跳过）", password=True)
++    if token:
++        save_env_value("NAPCAT_TOKEN", token.strip())
++        print_success("  已保存 NAPCAT_TOKEN")
++    else:
++        print_info("  已跳过（未设置访问令牌）")
++
++    # ── 可选：私聊白名单 ──
++    print()
++    print_info("  白名单：仅允许填写的 QQ 号私聊触发机器人，留空则所有人均可使用")
++    print_info("  网关默认拒绝所有用户，请至少填写自己的 QQ 号，或留空后选择开放访问")
++    allowed = prompt("  允许私聊的 QQ 号（逗号分隔，留空则不限制）", password=False)
++    if allowed:
++        save_env_value("NAPCAT_ALLOWED_USERS", allowed.replace(" ", ""))
++        print_success("  已保存 NAPCAT_ALLOWED_USERS — 仅白名单内的用户可私聊使用")
++    else:
++        print()
++        access_choices = [
++            "开放访问（所有人均可私聊触发机器人）",
++            "暂时跳过（稍后在 .env 中手动配置）",
++        ]
++        access_idx = prompt_choice("  如何处理未授权用户？", access_choices, 0)
++        if access_idx == 0:
++            save_env_value("NAPCAT_ALLOW_ALL_USERS", "true")
++            print_warning("  已开启开放访问 — 所有人均可使用你的机器人！")
++        else:
++            print_info("  已跳过 — 可在 .env 中配置 NAPCAT_ALLOWED_USERS 或 NAPCAT_ALLOW_ALL_USERS=true")
++
++    # ── 可选：群聊白名单 ──
++    print()
++    print_info("  群聊白名单：仅允许填写的 QQ 号在群聊中 @ 触发机器人，留空则群内所有人均可触发")
++    group_allowed = prompt("  允许群聊触发的 QQ 号（逗号分隔，留空则不限制）", password=False)
++    if group_allowed:
++        save_env_value("NAPCAT_GROUP_ALLOWED_USERS", group_allowed.replace(" ", ""))
++        print_success("  已保存 NAPCAT_GROUP_ALLOWED_USERS")
++    else:
++        print_info("  已跳过（群聊不限制触发用户）")
++
++    # ── 可选：管理员 ──
++    print()
++    print_info("  拥有 /mute /kick /ban 等管理命令权限的 QQ 号，多个用英文逗号分隔")
++    admins = prompt("  管理员 QQ 号（逗号分隔，留空跳过）", password=False)
++    if admins:
++        save_env_value("NAPCAT_ADMIN_USERS", admins.replace(" ", ""))
++        print_success("  已保存 NAPCAT_ADMIN_USERS")
++    else:
++        print_info("  已跳过（可在 .env 中手动设置 NAPCAT_ADMIN_USERS）")
++
++    # ── 可选：默认投递目标 ──
++    print()
++    print_info("  定时任务结果的默认投递目标：私聊填 QQ 号，群聊填 g:<群号>（例如 g:123456789）")
++    home = prompt("  默认投递目标（留空跳过）", password=False)
++    if home:
++        save_env_value("NAPCAT_HOME_CHANNEL", home.strip())
++        print_success("  已保存 NAPCAT_HOME_CHANNEL")
++    else:
++        print_info("  已跳过（可在 .env 中手动设置 NAPCAT_HOME_CHANNEL）")
++
++    print()
++    print_success(f"{emoji} NapCat (QQ) 配置完成！")
++    print_info("  确保 NapCat 已启动并登录 QQ 账号后，运行 hermes gateway 开始使用。")
++
++
+ def _setup_signal():
+     """Interactive setup for Signal messenger."""
+     import shutil
+@@ -3783,6 +3919,8 @@ def gateway_setup():
+             _setup_feishu()
+         elif platform["key"] == "qqbot":
+             _setup_qqbot()
++        elif platform["key"] == "napcat":
++            _setup_napcat()
+         elif platform["key"] == "wecom":
+             _setup_wecom()
+         else:

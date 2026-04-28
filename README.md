@@ -49,7 +49,29 @@ hermes-napcat/
 
 ## 安装
 
-### 1. 安装 Hermes Agent
+### 一键安装（推荐）
+
+在服务器上执行：
+
+```bash
+# 国内服务器（走 gh-proxy 代理）
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+
+# 直连 GitHub
+curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+```
+
+脚本会自动完成：
+1. 将适配器克隆到 hermes 的 `gateway/platforms/napcat/`
+2. 将 `hermes gateway setup` 向导打入 NapCat 配置项
+
+安装完成后直接跳到[配置](#3-配置)章节。
+
+---
+
+### 手动安装
+
+#### 1. 安装 Hermes Agent
 
 如果尚未安装，先完成 Hermes Agent 安装：
 
@@ -59,25 +81,21 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 
 详见 [Hermes Agent 文档](https://hermes-agent.nousresearch.com/docs/)。
 
-### 2. 安装适配器
+#### 2. 安装适配器
 
 ```bash
 # 克隆到 Hermes Agent 的平台目录（推荐）
-cd /path/to/hermes-agent/gateway/platforms
+cd /opt/hermes/gateway/platforms
 git clone https://github.com/Daiyimo/hermes-napcat.git napcat
 ```
 
-或者克隆到其他位置后创建符号链接：
+#### 2.5. 修补配置向导（可选，让 `hermes gateway setup` 出现 NapCat 选项）
 
 ```bash
-git clone https://github.com/Daiyimo/hermes-napcat.git ~/hermes-napcat
-
-# Linux / macOS
-ln -s ~/hermes-napcat /path/to/hermes-agent/gateway/platforms/napcat
-
-# Windows (管理员权限 CMD)
-mklink /J C:\path\to\hermes-agent\gateway\platforms\napcat C:\path\to\hermes-napcat
+patch -p1 -d /opt/hermes < /opt/hermes/gateway/platforms/napcat/napcat_gateway.patch
 ```
+
+> 跳过此步也没关系，直接手动编辑 `.env` 同样有效（见[环境变量参考](#环境变量参考)）。
 
 ### 3. 配置
 
