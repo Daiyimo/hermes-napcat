@@ -51,15 +51,25 @@ hermes-napcat/
 
 ### 一键安装（推荐）
 
-在服务器上执行：
+在服务器上执行，选择 `curl` 或 `wget` 其中一种：
 
 ```bash
+# ── curl（推荐）──────────────────────────────────────────────
 # 国内服务器（走 gh-proxy 代理）
 curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
 
 # 直连 GitHub
 curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+
+# ── wget（curl 不可用时）──────────────────────────────────────
+# 国内服务器（走 gh-proxy 代理）
+wget -qO- https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+
+# 直连 GitHub
+wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
 ```
+
+> `wget` 在绝大多数 Linux 发行版中内置，如仍不可用可先安装：`apt install wget` 或 `yum install wget`。
 
 脚本会自动完成：
 1. 将适配器克隆到 hermes 的 `gateway/platforms/napcat/`

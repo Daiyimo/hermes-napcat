@@ -81,7 +81,7 @@ else
     info "  已备份 → ${GATEWAY_PY}.bak"
 
     # 用 Python 做字符串替换，完全不依赖行号
-    python3 - "$GATEWAY_PY" "$NAPCAT_DIR" <<'PYEOF'
+    if python3 - "$GATEWAY_PY" "$NAPCAT_DIR" <<'PYEOF'
 import sys, os, re
 
 gateway_py = sys.argv[1]
@@ -236,16 +236,6 @@ def _setup_napcat():
 
 '''
 
-# 找 _setup_signal 或 _setup_qqbot 之后插入
-for anchor2_pattern in [
-    r'(def _setup_qqbot\(\):.*?\n\n\n)(def _setup_signal)',
-    r'(def _setup_signal\(\):)',
-]:
-    m = re.search(anchor2_pattern, content, re.DOTALL)
-    if m:
-        insert_before = m.group(0).split('def _setup_signal')[0] if 'signal' in anchor2_pattern else m.group(0)
-        break
-
 if 'def _setup_napcat' not in content:
     # 在 def _setup_signal 前插入
     if 'def _setup_signal' in content:
@@ -300,8 +290,7 @@ except SyntaxError as e:
     shutil.copy(gateway_py + '.bak', gateway_py)
     sys.exit(1)
 PYEOF
-
-    if [ $? -eq 0 ]; then
+    then
         success "gateway.py 修补完成"
     else
         error "修补失败，已自动恢复备份"
