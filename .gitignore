@@ -31,3 +31,5 @@ logs/
 
 # Temp
 tmp/
+*.bak
+*.swp

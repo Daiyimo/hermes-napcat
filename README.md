@@ -42,7 +42,18 @@ hermes-napcat/
 ├── group_commands.py     # 群管理命令处理（/mute /kick /status /ping /help）
 ├── message_builder.py    # 文本/媒体 → OneBot 11 消息段数组构建
 ├── utils.py              # HTTP 客户端辅助、QQ 号脱敏
-└── README.md
+├── requirements.txt      # Python 依赖清单
+├── napcat_gateway.patch  # 手动 patch 文件（备选方案）
+├── install.sh            # curl 入口包装（下载并执行 scripts/install.sh）
+├── .gitignore
+├── README.md
+└── scripts/
+    ├── install.sh        # 主安装脚本（自动检测 + 克隆 + 修补 gateway.py）
+    ├── diagnose.sh       # 诊断工具（检查依赖、配置、连通性）
+    ├── health-check.sh   # 快速健康检查（支持 --json 输出）
+    ├── logs-tail.sh      # 日志实时查看（NapCat 高亮）
+    ├── quick-setup-env.sh # 交互式 .env 配置（不依赖 hermes gateway setup）
+    └── test-message.sh   # 直接 API 测试消息发送
 ```
 
 ---
