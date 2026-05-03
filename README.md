@@ -7,6 +7,10 @@ QQ 消息平台适配器，通过 [NapCat](https://napneko.github.io) 的 OneBot
 | Hermes Agent | v0.11.0 |
 | NapCat | v4.18.1+ |
 | Python | >= 3.11 |
+| websockets | >= 12.0 |
+| httpx | >= 0.27.0 |
+
+> 如果 Hermes Agent 已通过 `.[all]` 安装，`websockets` 和 `httpx` 已包含在内。手动安装适配器时可用 `pip install -r requirements.txt` 补全依赖。
 
 ---
 
@@ -105,12 +109,25 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 #### 2. 安装适配器
 
 ```bash
-# 克隆到 Hermes Agent 的平台目录（推荐）
+# 方式一：运行安装脚本（推荐）
+git clone https://github.com/Daiyimo/hermes-napcat.git
+cd hermes-napcat
+bash scripts/install.sh /opt/hermes    # 指定 hermes 安装目录
+
+# 方式二：手动克隆到 Hermes Agent 的平台目录
 cd /opt/hermes/gateway/platforms
 git clone https://github.com/Daiyimo/hermes-napcat.git napcat
 ```
 
-#### 2.5. 修补配置向导（可选，让 `hermes gateway setup` 出现 NapCat 选项）
+#### 2.5. 安装 Python 依赖
+
+如果 Hermes Agent 未安装 `.[all]` extras，需手动安装适配器依赖：
+
+```bash
+pip install -r /opt/hermes/gateway/platforms/napcat/requirements.txt
+```
+
+#### 2.6. 修补配置向导（可选，让 `hermes gateway setup` 出现 NapCat 选项）
 
 ```bash
 patch -p1 -d /opt/hermes < /opt/hermes/gateway/platforms/napcat/napcat_gateway.patch
@@ -296,6 +313,31 @@ deliver: napcat:g:987654321     # 投递到群号 987654321（群聊）
 ---
 
 ## 故障排查
+
+### 诊断工具
+
+项目内置了完整的运维工具链，位于 `scripts/` 目录：
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/diagnose.sh` | 全量诊断 — 检查环境变量、Python 依赖、HTTP/WS 连通性、Hermes 集成 |
+| `scripts/health-check.sh` | 快速健康检查 — 适合 cron / systemd timer，支持 `--json` 输出 |
+| `scripts/logs-tail.sh` | 日志实时查看 — 自动定位日志文件，高亮 NapCat 相关行 |
+| `scripts/quick-setup-env.sh` | 交互式 `.env` 配置 — 不依赖 `hermes gateway setup`，直接编辑环境变量 |
+| `scripts/test-message.sh` | 消息发送测试 — 绕过 Hermes 直接调用 NapCat API |
+
+```bash
+# 快速诊断
+bash scripts/diagnose.sh
+
+# 健康检查（JSON 输出，适合监控）
+bash scripts/health-check.sh --json
+
+# 实时查看日志
+bash scripts/logs-tail.sh -n 100 --grep napcat
+```
+
+### 常见问题
 
 | 问题 | 排查方法 |
 |------|----------|
