@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # hermes-napcat install script (curl-friendly entry point)
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install.sh | bash
 #
 # This is a thin wrapper that downloads and runs scripts/install.sh.
 # It exists so the URL path stays clean.  The full installer logic is in scripts/install.sh.
 set -e
 
-SCRIPT_URL="https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/scripts/install.sh"
-PROXY_SCRIPT_URL="https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/scripts/install.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/scripts/install.sh"
+PROXY_SCRIPT_URL="https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/scripts/install.sh"
 
 TMPDIR="${TMPDIR:-/tmp}"
 INSTALL_SCRIPT="$TMPDIR/hermes-napcat-install-$$.sh"

@@ -12,7 +12,7 @@
 #   bash scripts/install.sh --help         # Show help
 #
 # One-liner (from GitHub):
-#   curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/scripts/install.sh | bash
 # ============================================================================
 
 set -e

@@ -71,17 +71,17 @@ hermes-napcat/
 ```bash
 # ── curl（推荐）──────────────────────────────────────────────
 # 国内服务器（走 gh-proxy 代理）
-curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+curl -fsSL https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install.sh | bash
 
 # 直连 GitHub
-curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install.sh | bash
 
 # ── wget（curl 不可用时）──────────────────────────────────────
 # 国内服务器（走 gh-proxy 代理）
-wget -qO- https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+wget -qO- https://gh-proxy.com/https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install.sh | bash
 
 # 直连 GitHub
-wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install.sh | bash
 ```
 
 > `wget` 在绝大多数 Linux 发行版中内置，如仍不可用可先安装：`apt install wget` 或 `yum install wget`。
