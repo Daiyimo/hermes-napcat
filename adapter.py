@@ -6,7 +6,8 @@ HTTP POST (send API calls) using the OneBot 11 protocol.
 
 Configuration via environment variables:
     NAPCAT_HTTP_URL          — NapCat HTTP API URL (e.g. http://127.0.0.1:3000)
-    NAPCAT_WS_URL            — NapCat WebSocket URL (e.g. ws://127.0.0.1:3002)
+    NAPCAT_WS_URL            — NapCat WebSocket URL (e.g. ws://127.0.0.1:3001 for forward,
+                               ws://127.0.0.1:3002 for reverse)
     NAPCAT_WS_MODE           — "forward" (adapter connects to NapCat, default)
                                "reverse" (NapCat connects to adapter, for websocketClients)
     NAPCAT_TOKEN             — Optional Bearer token for authentication

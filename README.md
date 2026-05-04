@@ -163,15 +163,21 @@ hermes gateway setup
 ─── 🐧 NapCat (QQ) 配置向导 ───
 
   1. 安装并运行 NapCat v4.18.1+（https://napneko.github.io）
-  2. 登录 QQ 账号后，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）和 WebSocket Server（默认端口 3001，也可用 3002）
-  3. 将两个 Server 的 messagePostFormat 均设为 array
-  4. 如需 Token 鉴权，在两个 Server 中填写相同的 token 字段
+  2. 登录 QQ 账号，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）
+  3. 正向模式：启用 WebSocket Server（默认端口 3001）
+   反向模式：启用 WebSocket Client（填写适配器地址 ws://127.0.0.1:3002）
+  4. 将 messagePostFormat 均设为 array
+  5. 如需 Token 鉴权，在 Server/Client 中填写相同的 token 字段
 
   NapCat HTTP Server 地址，例如 http://127.0.0.1:3000
   NapCat HTTP API 地址: http://127.0.0.1:3000
 
-  NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3002
-  NapCat WebSocket 地址: ws://127.0.0.1:3002
+  NapCat WebSocket 地址
+  NapCat WebSocket 地址: ws://127.0.0.1:3001
+
+  WS 连接模式：forward = 适配器连接 NapCat WS Server（正向，默认）
+              reverse = NapCat 连接适配器 WS Server（反向，用于 websocketClients）
+  WS 模式 (forward/reverse，默认 forward): forward
 
   与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过
   访问令牌（可选，留空跳过）:
@@ -291,6 +297,36 @@ NAPCAT_WS_MODE=reverse
 > **重要**: `messagePostFormat` 必须设为 `"array"`，适配器依赖消息段数组格式。
 
 ---
+
+
+---
+
+## Docker 部署
+
+同一台设备上 NapCat + Hermes 各一个容器，推荐 **Forward 模式**：
+
+```yaml
+# docker-compose.yml
+services:
+  napcat:
+    image: your-napcat-image
+    container_name: napcat
+    ports:
+      - "3000:3000"    # HTTP API — Hermes 需要调
+    # WS Server 3001 不需要映射到宿主机，容器间内网即可
+
+  hermes:
+    image: your-hermes-image
+    container_name: hermes
+    environment:
+      NAPCAT_HTTP_URL: http://napcat:3000
+      NAPCAT_WS_URL: ws://napcat:3001
+      NAPCAT_WS_MODE: forward
+    depends_on:
+      - napcat
+```
+
+NapCat 侧配 `websocketServers` 开 3001，Hermes 侧用容器名 `napcat` 作为主机名直连。详情见上方 [正向 WebSocket 模式](#正向-websocket-模式推荐默认)。
 
 ## 环境变量参考
 
