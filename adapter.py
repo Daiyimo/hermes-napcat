@@ -7,6 +7,8 @@ HTTP POST (send API calls) using the OneBot 11 protocol.
 Configuration via environment variables:
     NAPCAT_HTTP_URL          — NapCat HTTP API URL (e.g. http://127.0.0.1:3000)
     NAPCAT_WS_URL            — NapCat WebSocket URL (e.g. ws://127.0.0.1:3002)
+    NAPCAT_WS_MODE           — "forward" (adapter connects to NapCat, default)
+                               "reverse" (NapCat connects to adapter, for websocketClients)
     NAPCAT_TOKEN             — Optional Bearer token for authentication
     NAPCAT_ADMIN_USERS       — Comma-separated QQ numbers allowed to use admin commands
     NAPCAT_ALLOWED_USERS     — Comma-separated QQ numbers allowed to interact with the bot
@@ -161,7 +163,8 @@ class NapCatAdapter(BasePlatformAdapter):
         self._self_name: Optional[str] = None
 
         # Connection state
-        self._ws: Any = None  # websockets connection
+        self._ws: Any = None  # websockets connection (client or server-accepted)
+        self._ws_server: Any = None  # websockets server (reverse mode only)
         self._http_client: Any = None  # httpx.AsyncClient
         self._listen_task: Optional[asyncio.Task] = None
 
@@ -178,6 +181,19 @@ class NapCatAdapter(BasePlatformAdapter):
         # enable_reactions: auto emoji reaction on incoming messages (default True)
         _reactions_env = os.getenv("NAPCAT_ENABLE_REACTIONS", "true").strip().lower()
         self._enable_reactions: bool = _reactions_env not in ("false", "0", "no")
+
+        # WS mode: "forward" = adapter connects to NapCat WS server (websocketServers)
+        #          "reverse" = NapCat connects to adapter WS server (websocketClients)
+        _ws_mode_env = os.getenv("NAPCAT_WS_MODE", "forward").strip().lower()
+        self._ws_mode: str = _ws_mode_env if _ws_mode_env in ("forward", "reverse") else "forward"
+        # For reverse mode, parse listen host:port from the WS URL
+        self._ws_listen_host: str = "127.0.0.1"
+        self._ws_listen_port: int = 3002
+        if self._ws_mode == "reverse" and self._ws_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(self._ws_url)
+            self._ws_listen_host = parsed.hostname or "127.0.0.1"
+            self._ws_listen_port = parsed.port or 3002
 
         # Authorized users cache (lazy-loaded)
         self._allowed_users_cache: Optional[set] = None
@@ -253,17 +269,23 @@ class NapCatAdapter(BasePlatformAdapter):
                     exc,
                 )
 
-            # 3. Start WS listener task (handles reconnection internally)
-            self._listen_task = asyncio.create_task(
-                self._ws_listen_loop(), name=f"napcat-ws-{self._self_id or 'unknown'}"
-            )
+            # 3. Start WS (forward or reverse mode)
+            if self._ws_mode == "reverse":
+                self._listen_task = asyncio.create_task(
+                    self._start_ws_server(), name=f"napcat-ws-server-{self._self_id or 'unknown'}"
+                )
+            else:
+                self._listen_task = asyncio.create_task(
+                    self._ws_listen_loop(), name=f"napcat-ws-{self._self_id or 'unknown'}"
+                )
 
             self._mark_connected()
             logger.info(
-                "[%s] Connected — HTTP=%s WS=%s",
+                "[%s] Connected — HTTP=%s WS=%s mode=%s",
                 self._log_tag,
                 self._http_url,
                 self._ws_url,
+                self._ws_mode,
             )
             return True
 
@@ -290,6 +312,13 @@ class NapCatAdapter(BasePlatformAdapter):
                 pass
             self._listen_task = None
 
+        # Reverse mode: close the WS server
+        ws_server = getattr(self, "_ws_server", None)
+        if ws_server:
+            ws_server.close()
+            await ws_server.wait_closed()
+            self._ws_server = None
+
         if self._ws:
             try:
                 await self._ws.close()
@@ -307,7 +336,86 @@ class NapCatAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self._log_tag)
 
     # ------------------------------------------------------------------
-    # WebSocket event loop with reconnection
+    # Reverse WebSocket server (NapCat connects to us)
+    # ------------------------------------------------------------------
+
+    async def _start_ws_server(self) -> None:
+        """Run a WS server that NapCat connects to (reverse WebSocket mode).
+
+        In reverse mode, NapCat is the WS client (configured as a
+        ``websocketClients`` entry), and the adapter acts as the WS server.
+        NapCat pushes OneBot 11 events through this connection.
+
+        The server accepts one NapCat connection at a time and processes
+        events from it.  If NapCat disconnects and reconnects, the new
+        connection is accepted seamlessly.
+        """
+        """
+        self._ws_server: Optional[Any] = None
+
+        async def on_connect(ws: Any) -> None:
+            """Handle an incoming NapCat connection."""
+            if self._ws is not None:
+                logger.info(
+                    "[%s] New NapCat connection from %s (replacing existing)",
+                    self._log_tag, ws.remote_address,
+                )
+            else:
+                logger.info(
+                    "[%s] NapCat connected from %s",
+                    self._log_tag, ws.remote_address,
+                )
+            self._ws = ws
+            try:
+                async for raw_msg in ws:
+                    if not self._running:
+                        break
+                    try:
+                        data = json.loads(raw_msg)
+                        await self._dispatch_event(data)
+                    except json.JSONDecodeError:
+                        logger.warning("[%s] Non-JSON WS message: %.200s", self._log_tag, raw_msg)
+                    except Exception as exc:
+                        logger.error(
+                            "[%s] Error dispatching event: %s",
+                            self._log_tag, exc, exc_info=True,
+                        )
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[%s] NapCat connection closed: %s", self._log_tag, exc)
+            finally:
+                if self._ws is ws:
+                    self._ws = None
+                logger.info("[%s] NapCat disconnected — waiting for reconnect", self._log_tag)
+
+        try:
+            self._ws_server = await websockets.serve(
+                on_connect,
+                host=self._ws_listen_host,
+                port=self._ws_listen_port,
+            )
+            logger.info(
+                "[%s] Reverse WS server listening on %s:%d",
+                self._log_tag, self._ws_listen_host, self._ws_listen_port,
+            )
+            # Keep the server alive until shutdown
+            while self._running:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.debug("[%s] Reverse WS server task cancelled", self._log_tag)
+        except Exception as exc:
+            if self._running:
+                self._set_fatal_error("napcat_ws_server_error", str(exc), retryable=True)
+                logger.error("[%s] Reverse WS server crashed: %s", self._log_tag, exc, exc_info=True)
+        finally:
+            if self._ws_server:
+                self._ws_server.close()
+                await self._ws_server.wait_closed()
+                self._ws_server = None
+
+    # ------------------------------------------------------------------
+    # Forward WebSocket client (adapter connects to NapCat)
     # ------------------------------------------------------------------
 
     async def _ws_listen_loop(self) -> None:

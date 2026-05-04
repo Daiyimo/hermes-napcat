@@ -16,10 +16,12 @@ QQ 消息平台适配器，通过 [NapCat](https://napneko.github.io) 的 OneBot
 
 ## 架构
 
+### 正向模式（默认）：适配器 → NapCat WS Server
+
 ```
 NapCat (QQ 客户端)                    Hermes NapCat Adapter
 ┌──────────────────────┐              ┌──────────────────────┐
-│ WS Server  :3002     │◄── ws ──────│ WS Client (接收事件)  │
+│ WS Server  :3001     │◄── ws ──────│ WS Client (接收事件)  │
 │ HTTP Server :3000    │◄── POST ────│ HTTP Client (发送API) │
 └──────────────────────┘              └──────────────────────┘
                                                │
@@ -30,11 +32,26 @@ NapCat (QQ 客户端)                    Hermes NapCat Adapter
                                          Hermes Gateway
 ```
 
-- **事件流**: NapCat WS 推送 → 适配器解析 OneBot 11 事件 → 构建 `MessageEvent` → 调用 `handle_message()`
+### 反向模式：NapCat WS Client → 适配器 WS Server
+
+```
+NapCat (QQ 客户端)                    Hermes NapCat Adapter
+┌──────────────────────┐              ┌──────────────────────┐
+│ WS Client → :3002    │── ws ──────►│ WS Server (接收事件)  │
+│ HTTP Server :3000    │◄── POST ────│ HTTP Client (发送API) │
+└──────────────────────┘              └──────────────────────┘
+                                               │
+                                               ▼
+                                       handle_message(event)
+                                               │
+                                               ▼
+                                         Hermes Gateway
+```
+
+- **事件流**: NapCat 推送 OneBot 11 事件 → 适配器解析 → 构建 `MessageEvent` → 调用 `handle_message()`
 - **发送流**: 适配器构建 OneBot 11 消息段数组 → HTTP POST 到 NapCat `/send_msg`
 - **处理钩子**: 消息开始处理时贴"思考"表情，完成后根据成功/失败替换为 👍/😡
-
-> WS 端口默认为 `3001`，也可使用 `3002` 或其他端口，与 NapCat 配置保持一致即可。
+- **WS 模式**: 通过 `NAPCAT_WS_MODE` 切换 `forward`（默认）或 `reverse`
 
 ---
 
@@ -190,7 +207,11 @@ hermes status           # 查看各组件状态
 
 ## NapCat 侧配置
 
-安装并运行 [NapCat](https://napneko.github.io) v4.18.1+，登录 QQ 账号后，编辑 `onebot11_<QQ号>.json`，启用 **HTTP Server** 和 **WebSocket Server**：
+安装并运行 [NapCat](https://napneko.github.io) v4.18.1+，登录 QQ 账号后，编辑 `onebot11_<QQ号>.json`。
+
+### 正向 WebSocket 模式（推荐，默认）
+
+适配器作为客户端连接 NapCat 的 WS Server（`websocketServers`）：
 
 ```json
 {
@@ -210,7 +231,7 @@ hermes status           # 查看各组件状态
         "name": "hermesWs",
         "enable": true,
         "host": "0.0.0.0",
-        "port": 3002,
+        "port": 3001,
         "messagePostFormat": "array",
         "reportSelfMessage": false,
         "token": "",
@@ -219,6 +240,52 @@ hermes status           # 查看各组件状态
     ]
   }
 }
+```
+
+适配器配置：
+```bash
+NAPCAT_HTTP_URL=http://127.0.0.1:3000
+NAPCAT_WS_URL=ws://127.0.0.1:3001
+NAPCAT_WS_MODE=forward
+```
+
+### 反向 WebSocket 模式
+
+适配器作为 WS Server，NapCat 作为客户端连接过来（`websocketClients`）：
+
+```json
+{
+  "network": {
+    "httpServers": [
+      {
+        "name": "hermesHttp",
+        "enable": true,
+        "port": 3000,
+        "host": "0.0.0.0",
+        "messagePostFormat": "array",
+        "token": ""
+      }
+    ],
+    "websocketClients": [
+      {
+        "name": "hermesReverseWs",
+        "enable": true,
+        "url": "ws://127.0.0.1:3002",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "",
+        "reconnectInterval": 5000
+      }
+    ]
+  }
+}
+```
+
+适配器配置：
+```bash
+NAPCAT_HTTP_URL=http://127.0.0.1:3000
+NAPCAT_WS_URL=ws://127.0.0.1:3002
+NAPCAT_WS_MODE=reverse
 ```
 
 > **重要**: `messagePostFormat` 必须设为 `"array"`，适配器依赖消息段数组格式。
@@ -232,7 +299,8 @@ hermes status           # 查看各组件状态
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `NAPCAT_HTTP_URL` | 是 | NapCat HTTP API 地址，如 `http://127.0.0.1:3000` |
-| `NAPCAT_WS_URL` | 是 | NapCat WebSocket 地址，如 `ws://127.0.0.1:3002`（也可用 3001 等端口） |
+| `NAPCAT_WS_URL` | 是 | NapCat WebSocket 地址。正向模式填入 NapCat WS 服务器地址，如 `ws://127.0.0.1:3001`；反向模式填入适配器监听地址，如 `ws://127.0.0.1:3002` |
+| `NAPCAT_WS_MODE` | 否 | WebSocket 模式：`forward`（适配器连接 NapCat，默认）或 `reverse`（NapCat 连接适配器，对应 NapCat 的 websocketClients 配置） |
 | `NAPCAT_TOKEN` | 否 | NapCat 访问令牌（与 NapCat 配置中的 token 字段一致） |
 | `NAPCAT_HOME_CHANNEL` | 否 | 默认投递目标（QQ 号或群号，用于定时任务投递） |
 | `NAPCAT_ALLOWED_USERS` | 否 | 允许私聊的 QQ 号，逗号分隔（为空则不限制所有人） |
@@ -293,8 +361,9 @@ hermes status           # 查看各组件状态
 
 ## 连接机制
 
-- **WebSocket**: 适配器作为客户端连接 NapCat 的 WS Server（正向 WebSocket）
-- **重连策略**: 指数退避 + 随机抖动，退避序列 `[2, 5, 10, 30, 60]` 秒，最多 100 次尝试
+- **正向模式** (`NAPCAT_WS_MODE=forward`): 适配器作为 WS 客户端连接 NapCat 的 WS Server（`websocketServers`），指数退避重连
+- **反向模式** (`NAPCAT_WS_MODE=reverse`): 适配器启动 WS Server，NapCat 作为 WS 客户端连接过来（`websocketClients`），断线后 NapCat 自动重连
+- **重连策略**: 正向模式使用指数退避 + 随机抖动，退避序列 `[2, 5, 10, 30, 60]` 秒，最多 100 次尝试；反向模式由 NapCat 侧 `reconnectInterval` 控制
 - **心跳**: 响应 NapCat 的 `meta_event.heartbeat` 事件
 - **消息去重**: 基于 `message_id`，5 秒窗口内去重，最多缓存 1000 条
 - **平台锁**: 同一 HTTP URL 只允许一个连接实例，防止重复连接
@@ -345,7 +414,8 @@ bash scripts/logs-tail.sh -n 100 --grep napcat
 
 | 问题 | 排查方法 |
 |------|----------|
-| 连接失败 | 检查 `NAPCAT_HTTP_URL` 和 `NAPCAT_WS_URL` 是否正确，NapCat 是否正在运行 |
+| 连接失败 | 检查 `NAPCAT_HTTP_URL`/`NAPCAT_WS_URL` 是否正确，NapCat 是否正在运行。反向模式需确认 `NAPCAT_WS_MODE=reverse` |
+| 反向模式连不上 | 确认 NapCat 配置的是 `websocketClients`（非 `websocketServers`），URL 指向适配器的 `NAPCAT_WS_URL`，且 `NAPCAT_WS_MODE=reverse` |
 | 收不到消息 | 确认 NapCat 配置中 `messagePostFormat` 为 `"array"` |
 | 发送失败 | 检查 HTTP API 是否可达：`curl http://127.0.0.1:3000/get_login_info` |
 | Token 认证失败 | 确保 `.env` 中的 `NAPCAT_TOKEN` 与 NapCat 配置的 token 一致 |
