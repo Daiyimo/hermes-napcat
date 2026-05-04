@@ -19,7 +19,7 @@ QQ 消息平台适配器，通过 [NapCat](https://napneko.github.io) 的 OneBot
 ```
 NapCat (QQ 客户端)                    Hermes NapCat Adapter
 ┌──────────────────────┐              ┌──────────────────────┐
-│ WS Server  :3001     │◄── ws ──────│ WS Client (接收事件)  │
+│ WS Server  :3002     │◄── ws ──────│ WS Client (接收事件)  │
 │ HTTP Server :3000    │◄── POST ────│ HTTP Client (发送API) │
 └──────────────────────┘              └──────────────────────┘
                                                │
@@ -32,6 +32,9 @@ NapCat (QQ 客户端)                    Hermes NapCat Adapter
 
 - **事件流**: NapCat WS 推送 → 适配器解析 OneBot 11 事件 → 构建 `MessageEvent` → 调用 `handle_message()`
 - **发送流**: 适配器构建 OneBot 11 消息段数组 → HTTP POST 到 NapCat `/send_msg`
+- **处理钩子**: 消息开始处理时贴"思考"表情，完成后根据成功/失败替换为 👍/😡
+
+> WS 端口默认为 `3001`，也可使用 `3002` 或其他端口，与 NapCat 配置保持一致即可。
 
 ---
 
@@ -39,15 +42,15 @@ NapCat (QQ 客户端)                    Hermes NapCat Adapter
 
 ```
 hermes-napcat/
-├── __init__.py           # 包导出: NapCatAdapter, check_napcat_requirements
+├── __init__.py           # 包导出 + platform_registry 自动注册
 ├── adapter.py            # 主适配器类 (BasePlatformAdapter 子类)
 ├── constants.py          # 协议常量、超时、API 端点
 ├── event_parser.py       # OneBot 11 事件 → MessageEvent 转换 + 转发消息展开
 ├── group_commands.py     # 群管理命令处理（/mute /kick /status /ping /help）
 ├── message_builder.py    # 文本/媒体 → OneBot 11 消息段数组构建
 ├── utils.py              # HTTP 客户端辅助、QQ 号脱敏
+├── plugin.yaml           # 网关自动发现清单（无需手动打补丁）
 ├── requirements.txt      # Python 依赖清单
-├── napcat_gateway.patch  # 手动 patch 文件（备选方案）
 ├── install.sh            # curl 入口包装（下载并执行 scripts/install.sh）
 ├── .gitignore
 ├── README.md
@@ -88,9 +91,11 @@ wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install
 
 脚本会自动完成：
 1. 将适配器克隆到 hermes 的 `gateway/platforms/napcat/`
-2. 将 `hermes gateway setup` 向导打入 NapCat 配置项
+2. 安装 Python 依赖
 
 安装完成后直接跳到[配置](#3-配置)章节。
+
+> 适配器通过 `plugin.yaml` + `platform_registry` 注册，Hermes 网关启动时会自动发现 NapCat 平台，**无需手动打补丁**。
 
 ---
 
@@ -127,14 +132,6 @@ git clone https://github.com/Daiyimo/hermes-napcat.git napcat
 pip install -r /opt/hermes/gateway/platforms/napcat/requirements.txt
 ```
 
-#### 2.6. 修补配置向导（可选，让 `hermes gateway setup` 出现 NapCat 选项）
-
-```bash
-patch -p1 -d /opt/hermes < /opt/hermes/gateway/platforms/napcat/napcat_gateway.patch
-```
-
-> 跳过此步也没关系，直接手动编辑 `.env` 同样有效（见[环境变量参考](#环境变量参考)）。
-
 ### 3. 配置
 
 安装完成后，运行 Hermes 交互式配置向导：
@@ -149,15 +146,15 @@ hermes gateway setup
 ─── 🐧 NapCat (QQ) 配置向导 ───
 
   1. 安装并运行 NapCat v4.18.1+（https://napneko.github.io）
-  2. 登录 QQ 账号后，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）和 WebSocket Server（默认端口 3001）
+  2. 登录 QQ 账号后，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）和 WebSocket Server（默认端口 3001，也可用 3002）
   3. 将两个 Server 的 messagePostFormat 均设为 array
   4. 如需 Token 鉴权，在两个 Server 中填写相同的 token 字段
 
   NapCat HTTP Server 地址，例如 http://127.0.0.1:3000
   NapCat HTTP API 地址: http://127.0.0.1:3000
 
-  NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3001
-  NapCat WebSocket 地址: ws://127.0.0.1:3001
+  NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3002
+  NapCat WebSocket 地址: ws://127.0.0.1:3002
 
   与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过
   访问令牌（可选，留空跳过）:
@@ -213,7 +210,7 @@ hermes status           # 查看各组件状态
         "name": "hermesWs",
         "enable": true,
         "host": "0.0.0.0",
-        "port": 3001,
+        "port": 3002,
         "messagePostFormat": "array",
         "reportSelfMessage": false,
         "token": "",
@@ -235,15 +232,15 @@ hermes status           # 查看各组件状态
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `NAPCAT_HTTP_URL` | 是 | NapCat HTTP API 地址，如 `http://127.0.0.1:3000` |
-| `NAPCAT_WS_URL` | 是 | NapCat WebSocket 地址，如 `ws://127.0.0.1:3001` |
+| `NAPCAT_WS_URL` | 是 | NapCat WebSocket 地址，如 `ws://127.0.0.1:3002`（也可用 3001 等端口） |
 | `NAPCAT_TOKEN` | 否 | NapCat 访问令牌（与 NapCat 配置中的 token 字段一致） |
 | `NAPCAT_HOME_CHANNEL` | 否 | 默认投递目标（QQ 号或群号，用于定时任务投递） |
-| `NAPCAT_ALLOWED_USERS` | 否 | 允许私聊的 QQ 号，逗号分隔（为空则不限制） |
-| `NAPCAT_GROUP_ALLOWED_USERS` | 否 | 允许在群聊中使用的 QQ 号，逗号分隔 |
-| `NAPCAT_ALLOW_ALL_USERS` | 否 | 设为 `true` 允许所有用户 |
-| `NAPCAT_ADMIN_USERS` | 否 | 管理员 QQ 号，逗号分隔，允许执行 /mute /kick 等命令 |
+| `NAPCAT_ALLOWED_USERS` | 否 | 允许私聊的 QQ 号，逗号分隔（为空则不限制所有人） |
+| `NAPCAT_GROUP_ALLOWED_USERS` | 否 | 群聊中允许触发的 QQ 号，逗号分隔（优先级高于全局名单） |
+| `NAPCAT_ALLOW_ALL_USERS` | 否 | 设为 `true` 允许所有用户（默认：未配置白名单时等同于允许所有人） |
+| `NAPCAT_ADMIN_USERS` | 否 | 管理员 QQ 号，逗号分隔，允许执行 /mute /kick 等命令（管理员自动绕过授权白名单） |
 | `NAPCAT_REQUIRE_MENTION` | 否 | 群聊是否需要 @机器人 才触发（默认 `true`） |
-| `NAPCAT_ENABLE_REACTIONS` | 否 | 是否启用贴表情回应（默认 `true`） |
+| `NAPCAT_ENABLE_REACTIONS` | 否 | 是否启用处理状态贴表情（思考 → 👍/😡，默认 `true`） |
 
 ---
 
@@ -263,14 +260,18 @@ hermes status           # 查看各组件状态
 | @触发 | ✅ | 群聊中需要 @机器人 才触发（可通过 `NAPCAT_REQUIRE_MENTION=false` 关闭） |
 | QQ 表情 | ✅ | 102 个 QQ face → Unicode emoji 映射 |
 | 合并转发消息 | ✅ | 调用 `/get_forward_msg` 展开节点内容（最多 10 条，每条最长 200 字符） |
-| 贴表情回应 | ✅ | 根据消息语义自动贴对应 QQ 表情（可通过 `NAPCAT_ENABLE_REACTIONS=false` 关闭） |
+| 处理状态提示 | ✅ | 消息开始处理时贴"思考"表情（face 32），完成后替换为 👍（成功）或 😡（失败） |
 | 群管理命令 | ✅ | `/mute /ban /kick /status /ping /help`（需设置 `NAPCAT_ADMIN_USERS`） |
+| 用户授权 | ✅ | 基于 QQ 号白名单，管理员自动绕过授权检查 |
+| 消息分块 | ✅ | 超长消息（>4500 字符）自动拆分发送，块间限速 300ms |
+| Markdown 转换 | ✅ | 发送前自动去除 markdown 格式以适配 QQ 纯文本 |
+| SSRF 防护 | ✅ | 媒体下载时阻止重定向到内网地址 |
 | 消息撤回 | ✅ | delete_message API |
-| 消息编辑 | ❌ | OneBot 11 不支持 |
-| 输入状态 | ❌ | OneBot 11 无标准实现 |
 | 定时任务投递 | ✅ | 通过 `napcat:<QQ号或群号>` 投递 |
 | 跨平台发送 | ✅ | `send_message` 工具支持 napcat 平台 |
-| 用户鉴权 | ✅ | 基于 QQ 号白名单 |
+| 网关自动发现 | ✅ | 通过 `plugin.yaml` + `platform_registry` 注册，无需手动打补丁 |
+| 消息编辑 | ❌ | OneBot 11 不支持 |
+| 输入状态 | ❌ | OneBot 11 无标准实现 |
 
 ---
 
@@ -296,6 +297,9 @@ hermes status           # 查看各组件状态
 - **重连策略**: 指数退避 + 随机抖动，退避序列 `[2, 5, 10, 30, 60]` 秒，最多 100 次尝试
 - **心跳**: 响应 NapCat 的 `meta_event.heartbeat` 事件
 - **消息去重**: 基于 `message_id`，5 秒窗口内去重，最多缓存 1000 条
+- **平台锁**: 同一 HTTP URL 只允许一个连接实例，防止重复连接
+- **SSRF 防护**: HTTP 客户端注册了 `_ssrf_redirect_guard` 响应钩子，阻止媒体下载时重定向到内网地址
+- **错误隔离**: 单条消息处理失败不会影响 WebSocket 监听器，自动记录日志并跳过
 
 ---
 

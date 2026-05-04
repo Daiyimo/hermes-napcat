@@ -1,0 +1,6 @@
+name: napcat
+label: NapCat (QQ)
+description: QQ messaging via NapCat OneBot 11 protocol
+version: "1.0.0"
+platforms:
+  - napcat

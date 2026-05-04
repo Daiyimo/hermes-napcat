@@ -5,12 +5,15 @@ Connects to a NapCat instance via Forward WebSocket (receive events) and
 HTTP POST (send API calls) using the OneBot 11 protocol.
 
 Configuration via environment variables:
-    NAPCAT_HTTP_URL       — NapCat HTTP API URL (e.g. http://127.0.0.1:3000)
-    NAPCAT_WS_URL         — NapCat WebSocket URL (e.g. ws://127.0.0.1:3001)
-    NAPCAT_TOKEN          — Optional Bearer token for authentication
-    NAPCAT_ADMIN_USERS    — Comma-separated QQ numbers allowed to use admin commands
-    NAPCAT_REQUIRE_MENTION — Set to "true" to require @mention in group chats (default: true)
-    NAPCAT_ENABLE_REACTIONS — Set to "false" to disable emoji reactions (default: true)
+    NAPCAT_HTTP_URL          — NapCat HTTP API URL (e.g. http://127.0.0.1:3000)
+    NAPCAT_WS_URL            — NapCat WebSocket URL (e.g. ws://127.0.0.1:3002)
+    NAPCAT_TOKEN             — Optional Bearer token for authentication
+    NAPCAT_ADMIN_USERS       — Comma-separated QQ numbers allowed to use admin commands
+    NAPCAT_ALLOWED_USERS     — Comma-separated QQ numbers allowed to interact with the bot
+    NAPCAT_GROUP_ALLOWED_USERS — Optional per-group allowed user list (overrides global)
+    NAPCAT_ALLOW_ALL_USERS   — Set to "true" to allow any user (default if no allowlist)
+    NAPCAT_REQUIRE_MENTION   — Set to "true" to require @mention in group chats (default: true)
+    NAPCAT_ENABLE_REACTIONS  — Set to "false" to disable emoji reactions (default: true)
 """
 
 from __future__ import annotations
@@ -21,7 +24,6 @@ import logging
 import os
 import random
 import time
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 try:
@@ -46,11 +48,13 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
-    cache_image_from_url,
+    _ssrf_redirect_guard,
     cache_audio_from_url,
-    cache_document_from_bytes,
+    cache_image_from_url,
 )
+from gateway.platforms.helpers import strip_markdown
 
 from .constants import (
     API_TIMEOUT,
@@ -175,6 +179,11 @@ class NapCatAdapter(BasePlatformAdapter):
         _reactions_env = os.getenv("NAPCAT_ENABLE_REACTIONS", "true").strip().lower()
         self._enable_reactions: bool = _reactions_env not in ("false", "0", "no")
 
+        # Authorized users cache (lazy-loaded)
+        self._allowed_users_cache: Optional[set] = None
+        self._allowed_group_users_cache: Optional[set] = None
+        self._allow_all_users: Optional[bool] = None
+
     @property
     def name(self) -> str:
         return "NapCat"
@@ -214,10 +223,11 @@ class NapCatAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # 1. Create HTTP client
+            # 1. Create HTTP client with SSRF protection
             self._http_client = httpx.AsyncClient(
                 timeout=API_TIMEOUT,
                 follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
             )
 
             # 2. Get bot info via HTTP API
@@ -411,6 +421,35 @@ class NapCatAdapter(BasePlatformAdapter):
             logger.debug("[%s] Meta event: %s", self._log_tag, meta_type)
 
     # ------------------------------------------------------------------
+    # User authorization
+    # ------------------------------------------------------------------
+
+    def _load_authorization(self) -> None:
+        """Lazy-load the authorization allowlists from environment variables."""
+        if self._allowed_users_cache is not None:
+            return
+        raw = os.getenv("NAPCAT_ALLOWED_USERS", "").strip()
+        self._allowed_users_cache = {u.strip() for u in raw.split(",") if u.strip()} if raw else set()
+        raw_group = os.getenv("NAPCAT_GROUP_ALLOWED_USERS", "").strip()
+        self._allowed_group_users_cache = {u.strip() for u in raw_group.split(",") if u.strip()} if raw_group else set()
+        allow_all = os.getenv("NAPCAT_ALLOW_ALL_USERS", "").strip().lower()
+        self._allow_all_users = allow_all in ("true", "1", "yes")
+
+    def _is_user_authorized(self, user_id: str, is_group: bool = False) -> bool:
+        """Return True if *user_id* is allowed to interact with the bot."""
+        self._load_authorization()
+        if self._allow_all_users:
+            return True
+        # Group-specific allowlist takes precedence in groups
+        if is_group and self._allowed_group_users_cache:
+            return user_id in self._allowed_group_users_cache
+        # Global allowlist
+        if self._allowed_users_cache:
+            return user_id in self._allowed_users_cache
+        # No allowlists configured → allow everyone
+        return True
+
+    # ------------------------------------------------------------------
     # Incoming message handling
     # ------------------------------------------------------------------
 
@@ -429,6 +468,23 @@ class NapCatAdapter(BasePlatformAdapter):
         if not self._dedup_check(message_id):
             return
 
+        try:
+            await self._handle_message_event_inner(data, message_id, user_id, message_type)
+        except Exception:
+            logger.error(
+                "[%s] Unhandled error processing message %s — skipping",
+                self._log_tag, message_id, exc_info=True,
+            )
+
+    async def _handle_message_event_inner(
+        self,
+        data: Dict[str, Any],
+        message_id: str,
+        user_id: str,
+        message_type: str,
+    ) -> None:
+        """Core message processing (extracted for error isolation)."""
+
         # Extract sender info
         sender = data.get("sender") or {}
         user_name = sender.get("card") or sender.get("nickname") or user_id
@@ -445,6 +501,14 @@ class NapCatAdapter(BasePlatformAdapter):
         # Track chat type for sends
         self._chat_type_map[chat_id] = message_type
 
+        # Determine whether this is a group chat (reused below)
+        is_group = (message_type == MSG_TYPE_GROUP)
+
+        # User authorization gate (admins always bypass)
+        if not is_admin(user_id) and not self._is_user_authorized(user_id, is_group=is_group):
+            logger.debug("[%s] User %s not authorized — skipping", self._log_tag, user_id)
+            return
+
         # Parse message segments
         segments = data.get("message", [])
         if isinstance(segments, str):
@@ -460,7 +524,6 @@ class NapCatAdapter(BasePlatformAdapter):
         # ------------------------------------------------------------------
         # AT-trigger check (group only)
         # ------------------------------------------------------------------
-        is_group = (message_type == MSG_TYPE_GROUP)
         if is_group and self._require_mention:
             if not isinstance(segments, list) or not check_at_bot(segments, self._self_id or ""):
                 logger.debug(
@@ -541,12 +604,6 @@ class NapCatAdapter(BasePlatformAdapter):
             handled = await handle_group_command(cmd, parts, ctx, _reply_admin)
             if handled:
                 return
-
-        # ------------------------------------------------------------------
-        # Emoji reaction (贴表情回应)
-        # ------------------------------------------------------------------
-        if self._enable_reactions and message_id and self._http_client:
-            asyncio.create_task(self._send_emoji_reaction(message_id, text))
 
         # ------------------------------------------------------------------
         # Download and cache media
@@ -649,61 +706,39 @@ class NapCatAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
-    # Emoji reaction helper
+    # Processing lifecycle hooks (emoji reaction status indicators)
     # ------------------------------------------------------------------
 
-    # Mapping: regex keyword → NapCat emoji ID
-    _REACTION_RULES: List[tuple] = [
-        (r"查找|查询|搜索|检查|检测|查看|打开|获取|看看|找|搜", "124"),
-        (r"好的|收到|确认|明白|了解|知道了|没问题|[Oo][Kk]", "76"),
-        (r"谢谢|感谢|谢了|多谢|感激", "297"),
-        (r"加油|继续|努力|坚持|棒|厉害|牛|强", "315"),
-        (r"哈哈|开心|高兴|快乐|好玩|有趣|笑|嘻嘻", "99"),
-        (r"难过|悲伤|伤心|哭|呜|唉|可怜|失落", "5"),
-        (r"生气|愤怒|气死|烦死|滚|讨厌|恼火", "326"),
-        (r"[?？]|为什么|怎么|啥|什么|不懂|不明白|疑问", "32"),
-        (r"哇|惊|震惊|不会吧|真的吗|卧槽|天啊|没想到", "180"),
-        (r"喜欢|爱你|心动|可爱|萌", "66"),
-        (r"你好|早上好|晚安|嗨|[Hh]i|[Hh]ello|[Hh]ey", "14"),
-        (r"帮|请|麻烦|劳烦|能不能|可以吗|求", "118"),
-        (r"吃|饿|饭|食物|喝|美食", "53"),
-        (r"睡|困|累|休息|倦", "8"),
-    ]
-    _DEFAULT_REACTION = "307"  # 喵喵
-
-    async def _send_emoji_reaction(self, message_id: str, text: str) -> None:
-        """Send an auto emoji reaction based on message content keywords.
-
-        Runs as a fire-and-forget background task — failures are silently
-        logged and never surface to the caller.
-        """
-        import re as _re
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """React with a "thinking" emoji (face 32) when processing begins."""
+        if not self._enable_reactions or not self._http_client or not event.message_id:
+            return
         try:
-            emoji_id = self._DEFAULT_REACTION
-            for pattern, eid in self._REACTION_RULES:
-                if _re.search(pattern, text):
-                    emoji_id = eid
-                    break
-
             await api_call(
-                self._http_client,
-                self._http_url,
+                self._http_client, self._http_url,
                 API_SET_MSG_EMOJI_LIKE,
-                data={
-                    "message_id": int(message_id),
-                    "emoji_id": emoji_id,
-                    "set": True,
-                },
+                data={"message_id": int(event.message_id), "emoji_id": "32", "set": True},
                 token=self._token,
             )
-            logger.debug(
-                "[%s] Emoji reaction %s sent for msg %s",
-                self._log_tag,
-                emoji_id,
-                message_id,
+        except Exception as exc:
+            logger.debug("[%s] Processing-start reaction failed: %s", self._log_tag, exc)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the processing emoji for thumbs-up (76) on success or angry (326) on failure."""
+        if not self._enable_reactions or not self._http_client or not event.message_id:
+            return
+        if outcome == ProcessingOutcome.CANCELLED:
+            return  # Leave the thinking emoji in place
+        try:
+            emoji_id = "76" if outcome == ProcessingOutcome.SUCCESS else "326"
+            await api_call(
+                self._http_client, self._http_url,
+                API_SET_MSG_EMOJI_LIKE,
+                data={"message_id": int(event.message_id), "emoji_id": emoji_id, "set": True},
+                token=self._token,
             )
         except Exception as exc:
-            logger.debug("[%s] Emoji reaction failed: %s", self._log_tag, exc)
+            logger.debug("[%s] Processing-complete reaction failed: %s", self._log_tag, exc)
 
     def _dedup_check(self, message_id: str) -> bool:
         """Return True if *message_id* has not been seen recently."""
@@ -802,6 +837,10 @@ class NapCatAdapter(BasePlatformAdapter):
     # Sending messages
     # ------------------------------------------------------------------
 
+    def format_message(self, content: str) -> str:
+        """Strip markdown formatting for plain-text QQ delivery."""
+        return strip_markdown(content)
+
     async def send(
         self,
         chat_id: str,
@@ -809,15 +848,32 @@ class NapCatAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text message to a QQ chat."""
+        """Send a text message, splitting into chunks if needed."""
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
-        segments = build_text_message(content)
-        if reply_to:
-            segments = build_reply_message(reply_to, segments)
+        # Strip markdown and split long messages
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-        return await self._send_segments(chat_id, segments, metadata)
+        if len(chunks) == 1:
+            segments = build_text_message(formatted)
+            if reply_to:
+                segments = build_reply_message(reply_to, segments)
+            return await self._send_segments(chat_id, segments, metadata)
+
+        # Send chunks sequentially; only the first chunk gets the reply
+        last_result: Optional[SendResult] = None
+        for i, chunk in enumerate(chunks):
+            segments = build_text_message(chunk)
+            if reply_to and i == 0:
+                segments = build_reply_message(reply_to, segments)
+            last_result = await self._send_segments(chat_id, segments, metadata)
+            if last_result and not last_result.success:
+                break
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.3)  # Rate-limit between chunks
+        return last_result or SendResult(success=False, error="No chunks sent")
 
     async def send_image(
         self,
