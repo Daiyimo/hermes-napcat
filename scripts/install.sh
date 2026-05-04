@@ -538,17 +538,17 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             any_patched = True
 
     # 3b-3: dispatch branch in _send_to_platform
-    # NOTE: idempotency check uses "_send_napcat" NOT "Platform.NAPCAT:"
-    # because 3b-1 adds "napcat": Platform.NAPCAT, to platform_map which
-    # would cause a false-positive skip if _send_to_platform is defined
-    # before the platform_map in the file.
+    # NOTE: idempotency check uses the exact dispatch line pattern, NOT
+    # "_send_napcat" (the function name), because 3b-2 may insert the
+    # _send_napcat function definition after _send_to_platform in the file,
+    # which would cause a false-positive skip here.
     napcat_dispatch = '        elif platform == Platform.NAPCAT:\n            result = await _send_napcat(pconfig, chat_id, chunk)\n'
     dispatch_fn_anchor = None
     for candidate in ['def _send_to_platform', 'async def _send_to_platform']:
         if candidate in content:
             dispatch_fn_anchor = candidate
             break
-    if dispatch_fn_anchor and '_send_napcat' in content.split(dispatch_fn_anchor)[1]:
+    if dispatch_fn_anchor and 'elif platform == Platform.NAPCAT:' in content.split(dispatch_fn_anchor)[1]:
         print("  [3b-3] _send_to_platform 已有 napcat 分支，跳过")
     elif not dispatch_fn_anchor:
         # Also try: find the dispatch chain using regex (no _send_to_platform function)
@@ -557,7 +557,7 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             dispatch_fn_anchor = '__dispatch_chain__'
         else:
             print("  [3b-3] 警告：未找到 dispatch 函数，跳过 dispatch 插入")
-    if dispatch_fn_anchor and (dispatch_fn_anchor == '__dispatch_chain__' or '_send_napcat' not in content.split(dispatch_fn_anchor)[1]):
+    if dispatch_fn_anchor and (dispatch_fn_anchor == '__dispatch_chain__' or 'elif platform == Platform.NAPCAT:' not in content.split(dispatch_fn_anchor)[1]):
         inserted = False
         # Try: insert after qqbot dispatch
         for pattern in [
