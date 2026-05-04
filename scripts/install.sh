@@ -5,6 +5,8 @@
 # Installs the NapCat (QQ) platform adapter into an existing Hermes Agent
 # installation.  Clones the adapter repo into gateway/platforms/napcat/
 # and patches hermes_cli/gateway.py to add the NapCat setup wizard.
+# Also patches platforms.py, send_message_tool.py, and config.yaml to
+# register napcat across all Hermes platform registration points.
 #
 # The adapter uses plugin.yaml + platform_registry for runtime auto-discovery
 # (no manual patching needed for the gateway to find NapCat).  The gateway.py
@@ -155,7 +157,7 @@ fi
 
 # ── Step 1: Clone/update adapter ────────────────────────────────
 NAPCAT_DIR="$PLATFORMS_DIR/napcat"
-info "Step 1/2  安装适配器 → $NAPCAT_DIR"
+info "Step 1/3  安装适配器 → $NAPCAT_DIR"
 
 if [ -d "$NAPCAT_DIR/.git" ]; then
     info "  已有仓库，执行 git pull 更新..."
@@ -179,7 +181,7 @@ else
 fi
 
 # ── Step 2: Patch gateway.py ────────────────────────────────────
-info "Step 2/2  修补 hermes_cli/gateway.py（添加 NapCat 配置向导）"
+info "Step 2/3  修补 hermes_cli/gateway.py（添加 NapCat 配置向导）"
 
 if grep -q '"key": "napcat"' "$GATEWAY_PY"; then
     success "gateway.py 已包含 NapCat 条目，跳过"
@@ -414,6 +416,207 @@ PYEOF
     else
         error "修补失败，已自动恢复备份"
     fi
+fi
+
+# ── Step 3: Patch platform registration points ──────────────────
+info "Step 3/3  修补平台注册点（platforms.py / send_message_tool.py / config.yaml）"
+
+"$PYTHON_BIN" - "$HERMES_HOME" <<'PYEOF'
+import sys, os
+
+hermes_home = sys.argv[1]
+any_patched = False
+
+# ── 3a: Patch platforms.py ──
+platforms_py = os.path.join(hermes_home, 'hermes_cli', 'platforms.py')
+if os.path.isfile(platforms_py):
+    content = open(platforms_py, encoding='utf-8').read()
+    if '"napcat"' in content:
+        print("  [3a] platforms.py 已有 napcat 条目，跳过")
+    else:
+        old = '("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="hermes-qqbot")),'
+        new = '("qqbot",          PlatformInfo(label="💬 QQBot",           default_toolset="hermes-qqbot")),\n        ("napcat",         PlatformInfo(label="🐱 NapCat (QQ)",     default_toolset="hermes-napcat")),'
+        if old in content:
+            content = content.replace(old, new, 1)
+            open(platforms_py, 'w', encoding='utf-8').write(content)
+            print("  [3a] platforms.py napcat 条目插入成功")
+            any_patched = True
+        else:
+            print("  [3a] 警告：platforms.py 中未找到 qqbot 锚点，请手动添加 napcat")
+else:
+    print("  [3a] 跳过：未找到 platforms.py")
+
+# ── 3b: Patch send_message_tool.py ──
+send_msg_py = os.path.join(hermes_home, 'tools', 'send_message_tool.py')
+if os.path.isfile(send_msg_py):
+    content = open(send_msg_py, encoding='utf-8').read()
+
+    # 3b-1: platform_map entry
+    if '"napcat": Platform.NAPCAT' in content:
+        print("  [3b-1] send_message_tool.py 已有 napcat 映射，跳过")
+    else:
+        old = '"qqbot": Platform.QQBOT,'
+        new = '"qqbot": Platform.QQBOT,\n        "napcat": Platform.NAPCAT,'
+        if old in content:
+            content = content.replace(old, new, 1)
+            print("  [3b-1] napcat 映射插入成功")
+            any_patched = True
+        else:
+            print("  [3b-1] 警告：未找到 qqbot 锚点，请手动添加 napcat 映射")
+
+    # 3b-2: _send_napcat function
+    if 'def _send_napcat(' in content:
+        print("  [3b-2] _send_napcat 函数已存在，跳过")
+    else:
+        napcat_func = r'''
+async def _send_napcat(target: str, message: str) -> str:
+    """Send a message via NapCat (QQ) HTTP API."""
+    import os
+    import httpx
+
+    http_url = os.getenv("NAPCAT_HTTP_URL", "").rstrip("/")
+    token = os.getenv("NAPCAT_TOKEN", "")
+
+    if not http_url:
+        return "NAPCAT_HTTP_URL not configured"
+
+    clean = target.removeprefix("napcat:")
+    is_group = clean.startswith("g:")
+
+    payload: dict = {
+        "message": [{"type": "text", "data": {"text": message}}],
+    }
+    if is_group:
+        payload["group_id"] = clean[2:]
+        payload["message_type"] = "group"
+    else:
+        payload["user_id"] = clean
+        payload["message_type"] = "private"
+
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as client:
+            resp = await client.post(
+                f"{http_url}/send_msg", json=payload, headers=headers
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "ok":
+                    mid = data.get("data", {}).get("message_id", "")
+                    return f"NapCat message sent (id={mid})" if mid else "NapCat message sent"
+                return f"NapCat API error: {data.get('msg', data)}"
+            return f"NapCat HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        return f"NapCat send error: {e}"
+
+'''
+        # Try insertion anchors in order
+        inserted = False
+        for anchor in [
+            'async def _send_wecom',
+            'def _send_wecom',
+            'async def _send_qqbot',
+            'def _send_qqbot',
+            'async def _send_dingtalk',
+            'def _send_dingtalk',
+        ]:
+            if anchor in content:
+                content = content.replace(anchor, napcat_func + anchor, 1)
+                print(f"  [3b-2] _send_napcat 函数插入成功（锚点：{anchor}）")
+                any_patched = inserted = True
+                break
+        if not inserted:
+            content += napcat_func
+            print("  [3b-2] _send_napcat 函数追加到文件末尾")
+            any_patched = True
+
+    # 3b-3: dispatch branch in _send_to_platform
+    napcat_dispatch = '        elif platform == Platform.NAPCAT:\n            return await _send_napcat(target, message)\n'
+    if 'Platform.NAPCAT:' in content.split('def _send_to_platform')[1] if 'def _send_to_platform' in content else False:
+        print("  [3b-3] _send_to_platform 已有 napcat 分支，跳过")
+    elif 'def _send_to_platform' not in content:
+        print("  [3b-3] 警告：未找到 _send_to_platform 函数，跳过 dispatch 插入")
+    else:
+        inserted = False
+        # Try: insert after qqbot dispatch
+        for pattern in [
+            'elif platform == Platform.QQBOT:\n',
+            'elif Platform.QQBOT == platform:\n',
+            'elif Platform.QQBOT:\n',
+        ]:
+            if pattern in content:
+                content = content.replace(pattern, pattern + napcat_dispatch, 1)
+                print("  [3b-3] napcat dispatch 插入成功（qqbot 之后）")
+                any_patched = inserted = True
+                break
+        if not inserted:
+            # Fallback: insert before "not yet implemented" else clause
+            import re
+            fallback = re.search(
+                r'(\n\s+else:\s*\n\s+return\s+[^\n]*not yet implemented[^\n]*)',
+                content
+            )
+            if fallback:
+                content = content.replace(
+                    fallback.group(1),
+                    napcat_dispatch + fallback.group(1),
+                    1,
+                )
+                print("  [3b-3] napcat dispatch 插入成功（else 之前）")
+                any_patched = True
+            else:
+                print("  [3b-3] 警告：未找到 dispatch 插入点，请手动添加 napcat 分支")
+
+    # Write back if changed
+    if '"napcat"' not in content or any_patched:
+        open(send_msg_py, 'w', encoding='utf-8').write(content)
+else:
+    print("  [3b] 跳过：未找到 send_message_tool.py")
+
+# ── 3c: Patch config.yaml ──
+config_candidates = [
+    os.path.join(hermes_home, 'config.yaml'),
+    '/opt/data/config.yaml',
+    os.path.expanduser('~/.hermes/config.yaml'),
+]
+config_yaml = None
+for c in config_candidates:
+    if os.path.isfile(c):
+        config_yaml = c
+        break
+
+if config_yaml:
+    content = open(config_yaml, encoding='utf-8').read()
+    if 'napcat:' in content and 'hermes-napcat' in content:
+        print(f"  [3c] {config_yaml} 已有 napcat 配置，跳过")
+    else:
+        old = '  qqbot:\n  - hermes-qqbot'
+        new = '  qqbot:\n  - hermes-qqbot\n  napcat:\n  - hermes-napcat'
+        if old in content:
+            content = content.replace(old, new, 1)
+            open(config_yaml, 'w', encoding='utf-8').write(content)
+            print(f"  [3c] {config_yaml} napcat 配置插入成功")
+            any_patched = True
+        else:
+            print(f"  [3c] 警告：{config_yaml} 中未找到 qqbot 锚点，请手动添加 napcat")
+else:
+    print("  [3c] 警告：未找到 config.yaml，请手动添加 napcat 到 platform_toolsets")
+
+if any_patched:
+    print("")
+    print("  ✓ 平台注册点修补完成")
+else:
+    print("")
+    print("  ✓ 平台注册点已就绪（无需修补）")
+PYEOF
+
+if [ $? -eq 0 ]; then
+    success "平台注册点修补完成"
+else
+    warn "平台注册点修补出现警告，请检查上方输出"
 fi
 
 # ── Done ────────────────────────────────────────────────────────

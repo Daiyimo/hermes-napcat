@@ -7,7 +7,7 @@ QQ 消息平台适配器，通过 [NapCat](https://napneko.github.io) 的 OneBot
 | Hermes Agent | v0.11.0 |
 | NapCat | v4.18.1+ |
 | Python | >= 3.11 |
-| websockets | >= 12.0 |
+| websockets | >= 14.0 |
 | httpx | >= 0.27.0 |
 
 > 如果 Hermes Agent 已通过 `.[all]` 安装，`websockets` 和 `httpx` 已包含在内。手动安装适配器时可用 `pip install -r requirements.txt` 补全依赖。
@@ -72,7 +72,7 @@ hermes-napcat/
 ├── .gitignore
 ├── README.md
 └── scripts/
-    ├── install.sh        # 主安装脚本（自动检测 + 克隆 + 修补 gateway.py）
+    ├── install.sh        # 主安装脚本（自动检测 + 克隆 + 全链路平台注册修补）
     ├── diagnose.sh       # 诊断工具（检查依赖、配置、连通性）
     ├── health-check.sh   # 快速健康检查（支持 --json 输出）
     ├── logs-tail.sh      # 日志实时查看（NapCat 高亮）
@@ -107,12 +107,14 @@ wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install
 > `wget` 在绝大多数 Linux 发行版中内置，如仍不可用可先安装：`apt install wget` 或 `yum install wget`。
 
 脚本会自动完成：
+
 1. 将适配器克隆到 hermes 的 `gateway/platforms/napcat/`
-2. 安装 Python 依赖
+2. 修补 `hermes_cli/gateway.py` — 添加 NapCat 交互式配置向导
+3. 修补 `hermes_cli/platforms.py`、`tools/send_message_tool.py`、`config.yaml` — 完成平台全链路注册 + 注入 `_send_napcat` 发送函数
 
 安装完成后直接跳到[配置](#3-配置)章节。
 
-> 适配器通过 `plugin.yaml` + `platform_registry` 注册，Hermes 网关启动时会自动发现 NapCat 平台，**无需手动打补丁**。
+> 适配器通过 `plugin.yaml` + `platform_registry` 注册，安装脚本已自动完成所有必要的平台注册修补，**无需手动干预**。
 
 ---
 

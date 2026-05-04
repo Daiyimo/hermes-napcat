@@ -439,7 +439,7 @@ class NapCatAdapter(BasePlatformAdapter):
                     ping_interval=WS_PING_INTERVAL,
                     ping_timeout=WS_PING_TIMEOUT,
                     close_timeout=WS_CLOSE_TIMEOUT,
-                    additional_headers=extra_headers,
+                    extra_headers=extra_headers,
                 )
 
                 attempt = 0  # reset backoff on successful connect
@@ -787,7 +787,6 @@ class NapCatAdapter(BasePlatformAdapter):
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_name,
-            message_id=message_id,
         )
 
         # Build event
