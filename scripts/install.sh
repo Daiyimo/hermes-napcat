@@ -6,6 +6,10 @@
 # installation.  Clones the adapter repo into gateway/platforms/napcat/
 # and patches hermes_cli/gateway.py to add the NapCat setup wizard.
 #
+# The adapter uses plugin.yaml + platform_registry for runtime auto-discovery
+# (no manual patching needed for the gateway to find NapCat).  The gateway.py
+# patch here only adds the interactive "hermes gateway setup" wizard entry.
+#
 # Usage:
 #   bash scripts/install.sh                # Auto-detect hermes install dir
 #   bash scripts/install.sh /opt/hermes    # Specify hermes install dir
@@ -199,15 +203,19 @@ napcat_platform_entry = r'''    {
         "token_var": "NAPCAT_HTTP_URL",
         "setup_instructions": [
             "1. 安装并运行 NapCat v4.18.1+（https://napneko.github.io）",
-            "2. 登录 QQ 账号后，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）和 WebSocket Server（默认端口 3001）",
-            "3. 将两个 Server 的 messagePostFormat 均设为 array",
-            "4. 如需 Token 鉴权，在两个 Server 中填写相同的 token 字段",
+            "2. 登录 QQ 账号，在 NapCat 网络配置中启用 HTTP Server（默认端口 3000）",
+            "3. 正向模式：启用 WebSocket Server（默认端口 3001）",
+            "   反向模式：启用 WebSocket Client（填写适配器地址 ws://127.0.0.1:3002）",
+            "4. 将 messagePostFormat 均设为 array",
+            "5. 如需 Token 鉴权，在 Server/Client 中填写相同的 token 字段",
         ],
         "vars": [
             {"name": "NAPCAT_HTTP_URL", "prompt": "NapCat HTTP API 地址", "password": False,
              "help": "NapCat HTTP Server 地址，例如 http://127.0.0.1:3000"},
             {"name": "NAPCAT_WS_URL", "prompt": "NapCat WebSocket 地址", "password": False,
-             "help": "NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3001"},
+             "help": "正向填 WS Server 地址(如 ws://127.0.0.1:3001)，反向填适配器监听地址(如 ws://127.0.0.1:3002)"},
+	            {"name": "NAPCAT_WS_MODE", "prompt": "WS 模式 (forward=适配器连NapCat, reverse=NapCat连适配器)", "password": False,
+	             "help": "forward 对应 websocketServers(默认), reverse 对应 websocketClients(反向代理)"},
             {"name": "NAPCAT_TOKEN", "prompt": "访问令牌（可选，留空跳过）", "password": True,
              "help": "与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过"},
             {"name": "NAPCAT_ALLOWED_USERS", "prompt": "允许私聊的 QQ 号（逗号分隔，留空则不限制）", "password": False,
@@ -269,13 +277,25 @@ def _setup_napcat():
     print_success("  已保存 NAPCAT_HTTP_URL")
 
     print()
-    print_info("  NapCat WebSocket Server 地址，例如 ws://127.0.0.1:3001")
+    print_info("  NapCat WebSocket 地址
+  正向模式填 WS Server 地址（如 ws://127.0.0.1:3001）
+  反向模式填适配器监听地址（如 ws://127.0.0.1:3002）")
     ws_url = prompt("  NapCat WebSocket 地址", password=False)
     if not ws_url:
         print_warning("  已跳过 — 缺少 WebSocket 地址，NapCat 将无法接收消息。")
         return
     save_env_value("NAPCAT_WS_URL", ws_url.strip().rstrip("/"))
     print_success("  已保存 NAPCAT_WS_URL")
+
+    print()
+    print_info("  WS 连接模式：forward = 适配器连接 NapCat WS Server（正向，默认）")
+    print_info("             reverse = NapCat 连接适配器 WS Server（反向，用于 websocketClients）")
+    ws_mode = prompt("  WS 模式 (forward/reverse，默认 forward)", password=False)
+    if ws_mode and ws_mode.strip().lower() == "reverse":
+        save_env_value("NAPCAT_WS_MODE", "reverse")
+        print_success("  已保存 NAPCAT_WS_MODE=reverse（反向代理模式）")
+    else:
+        print_info("  使用默认正向模式（forward）")
 
     print()
     print_info("  与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过")
