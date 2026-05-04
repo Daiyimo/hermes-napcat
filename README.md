@@ -114,6 +114,11 @@ wget -qO- https://raw.githubusercontent.com/Daiyimo/hermes-napcat/master/install
 
 安装完成后直接跳到[配置](#3-配置)章节。
 
+> **⚠️ 重要**: 如果 `hermes gateway` 已在运行，安装后**必须重启**使平台注册生效，否则会报 `KeyError: 'napcat'`：
+> ```bash
+> hermes gateway restart
+> ```
+
 > 适配器通过 `plugin.yaml` + `platform_registry` 注册，安装脚本已自动完成所有必要的平台注册修补，**无需手动干预**。
 
 ---

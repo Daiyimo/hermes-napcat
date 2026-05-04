@@ -51,7 +51,7 @@ async def go():
     if token:
         headers['Authorization'] = f'Bearer {token}'
     try:
-        ws = await websockets.client.connect('${WS_URL}', additional_headers=headers, open_timeout=5)
+        ws = await websockets.client.connect('${WS_URL}', extra_headers=headers, open_timeout=5)
         await ws.close()
         return 'ok'
     except Exception as e:
