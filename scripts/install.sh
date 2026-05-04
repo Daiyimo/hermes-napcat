@@ -469,7 +469,7 @@ if os.path.isfile(send_msg_py):
         print("  [3b-2] _send_napcat 函数已存在，跳过")
     else:
         napcat_func = r'''
-async def _send_napcat(target: str, message: str) -> str:
+async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
     """Send a message via NapCat (QQ) HTTP API."""
     import os
     import httpx
@@ -478,20 +478,13 @@ async def _send_napcat(target: str, message: str) -> str:
     token = os.getenv("NAPCAT_TOKEN", "")
 
     if not http_url:
-        return "NAPCAT_HTTP_URL not configured"
-
-    clean = target.removeprefix("napcat:")
-    is_group = clean.startswith("g:")
+        return {"error": "NAPCAT_HTTP_URL not configured"}
 
     payload: dict = {
+        "user_id": chat_id,
         "message": [{"type": "text", "data": {"text": message}}],
+        "message_type": "private",
     }
-    if is_group:
-        payload["group_id"] = clean[2:]
-        payload["message_type"] = "group"
-    else:
-        payload["user_id"] = clean
-        payload["message_type"] = "private"
 
     headers = {"Content-Type": "application/json"}
     if token:
@@ -505,12 +498,11 @@ async def _send_napcat(target: str, message: str) -> str:
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("status") == "ok":
-                    mid = data.get("data", {}).get("message_id", "")
-                    return f"NapCat message sent (id={mid})" if mid else "NapCat message sent"
-                return f"NapCat API error: {data.get('msg', data)}"
-            return f"NapCat HTTP {resp.status_code}: {resp.text[:200]}"
+                    return {"ok": True, "message_id": data.get("data", {}).get("message_id")}
+                return {"error": f"NapCat API: {data.get('msg', data)}"}
+            return {"error": f"NapCat HTTP {resp.status_code}"}
     except Exception as e:
-        return f"NapCat send error: {e}"
+        return {"error": f"NapCat send error: {e}"}
 
 '''
         # Try insertion anchors in order
@@ -522,6 +514,8 @@ async def _send_napcat(target: str, message: str) -> str:
             'def _send_qqbot',
             'async def _send_dingtalk',
             'def _send_dingtalk',
+            'async def _send_feishu',
+            'def _send_feishu',
         ]:
             if anchor in content:
                 content = content.replace(anchor, napcat_func + anchor, 1)
@@ -530,16 +524,30 @@ async def _send_napcat(target: str, message: str) -> str:
                 break
         if not inserted:
             content += napcat_func
-            print("  [3b-2] _send_napcat 函数追加到文件末尾")
+            print("  [3b-2] _send_napcat 函数追加到文件末尾（无已知锚点）")
             any_patched = True
 
     # 3b-3: dispatch branch in _send_to_platform
-    napcat_dispatch = '        elif platform == Platform.NAPCAT:\n            return await _send_napcat(target, message)\n'
-    if 'Platform.NAPCAT:' in content.split('def _send_to_platform')[1] if 'def _send_to_platform' in content else False:
+    # NOTE: idempotency check uses "_send_napcat" NOT "Platform.NAPCAT:"
+    # because 3b-1 adds "napcat": Platform.NAPCAT, to platform_map which
+    # would cause a false-positive skip if _send_to_platform is defined
+    # before the platform_map in the file.
+    napcat_dispatch = '        elif platform == Platform.NAPCAT:\n            result = await _send_napcat(pconfig, chat_id, chunk)\n'
+    dispatch_fn_anchor = None
+    for candidate in ['def _send_to_platform', 'async def _send_to_platform']:
+        if candidate in content:
+            dispatch_fn_anchor = candidate
+            break
+    if dispatch_fn_anchor and '_send_napcat' in content.split(dispatch_fn_anchor)[1]:
         print("  [3b-3] _send_to_platform 已有 napcat 分支，跳过")
-    elif 'def _send_to_platform' not in content:
-        print("  [3b-3] 警告：未找到 _send_to_platform 函数，跳过 dispatch 插入")
-    else:
+    elif not dispatch_fn_anchor:
+        # Also try: find the dispatch chain using regex (no _send_to_platform function)
+        import re
+        if re.search(r'elif\s+platform\s*==\s*Platform\.', content):
+            dispatch_fn_anchor = '__dispatch_chain__'
+        else:
+            print("  [3b-3] 警告：未找到 dispatch 函数，跳过 dispatch 插入")
+    if dispatch_fn_anchor and (dispatch_fn_anchor == '__dispatch_chain__' or '_send_napcat' not in content.split(dispatch_fn_anchor)[1]):
         inserted = False
         # Try: insert after qqbot dispatch
         for pattern in [
@@ -565,7 +573,7 @@ async def _send_napcat(target: str, message: str) -> str:
                     napcat_dispatch + fallback.group(1),
                     1,
                 )
-                print("  [3b-3] napcat dispatch 插入成功（else 之前）")
+                print("  [3b-3] napcat dispatch 插入成功（else 兜底）")
                 any_patched = True
             else:
                 print("  [3b-3] 警告：未找到 dispatch 插入点，请手动添加 napcat 分支")
