@@ -470,7 +470,7 @@ if os.path.isfile(send_msg_py):
     else:
         napcat_func = r'''
 async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
-    """Send a message via NapCat (QQ) HTTP API."""
+    """通过 NapCat (QQ) HTTP API 发送消息。"""
     import os
     import httpx
 
@@ -478,12 +478,20 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
     token = os.getenv("NAPCAT_TOKEN", "")
 
     if not http_url:
-        return {"error": "NAPCAT_HTTP_URL not configured"}
+        return _error("NapCat: NAPCAT_HTTP_URL 未配置")
 
-    payload: dict = {
-        "user_id": chat_id,
+    # 区分私聊和群聊
+    if chat_id.startswith("g:") or chat_id.startswith("group:"):
+        actual_id = chat_id.split(":", 1)[1]
+        msg_type = "group"
+    else:
+        actual_id = chat_id
+        msg_type = "private"
+
+    payload = {
+        "user_id" if msg_type == "private" else "group_id": actual_id,
         "message": [{"type": "text", "data": {"text": message}}],
-        "message_type": "private",
+        "message_type": msg_type,
     }
 
     headers = {"Content-Type": "application/json"}
@@ -498,20 +506,22 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("status") == "ok":
-                    return {"ok": True, "message_id": data.get("data", {}).get("message_id")}
-                return {"error": f"NapCat API: {data.get('msg', data)}"}
-            return {"error": f"NapCat HTTP {resp.status_code}"}
+                    msg_id = data.get("data", {}).get("message_id")
+                    return {"success": True, "platform": "napcat",
+                            "chat_id": chat_id, "message_id": msg_id}
+                return _error(f"NapCat API: {data.get('msg', data)}")
+            return _error(f"NapCat HTTP {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
-        return {"error": f"NapCat send error: {e}"}
+        return _error(f"NapCat send failed: {e}")
 
 '''
         # Try insertion anchors in order
         inserted = False
         for anchor in [
-            'async def _send_wecom',
-            'def _send_wecom',
             'async def _send_qqbot',
             'def _send_qqbot',
+            'async def _send_wecom',
+            'def _send_wecom',
             'async def _send_dingtalk',
             'def _send_dingtalk',
             'async def _send_feishu',
@@ -578,6 +588,10 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             else:
                 print("  [3b-3] 警告：未找到 dispatch 插入点，请手动添加 napcat 分支")
 
+        # Strict verification after dispatch insertion attempt
+        if 'elif platform == Platform.NAPCAT:' not in content:
+            print("  [3b-3] 严重：dispatch 插入验证失败，请手动添加", file=sys.stderr)
+
     # Write back if changed
     if '"napcat"' not in content or any_patched:
         open(send_msg_py, 'w', encoding='utf-8').write(content)
@@ -612,6 +626,26 @@ if config_yaml:
             print(f"  [3c] 警告：{config_yaml} 中未找到 qqbot 锚点，请手动添加 napcat")
 else:
     print("  [3c] 警告：未找到 config.yaml，请手动添加 napcat 到 platform_toolsets")
+
+# === 最终验证 ===
+errors = []
+for check_file, patterns in [
+    (platforms_py, ['"napcat"']),
+    (send_msg_py, ['"napcat": Platform.NAPCAT', 'def _send_napcat(', 'elif platform == Platform.NAPCAT:']),
+    (config_yaml, ['napcat:', 'hermes-napcat']),
+]:
+    if check_file and os.path.isfile(check_file):
+        content = open(check_file, encoding='utf-8').read()
+        for pat in patterns:
+            if pat not in content:
+                errors.append(f"  \u2717 {check_file} 缺少 {pat}")
+
+if errors:
+    print("\n  验证失败，以下补丁未生效：")
+    for e in errors:
+        print(e)
+    print("  请手动修复以上文件。")
+    sys.exit(1)
 
 if any_patched:
     print("")
