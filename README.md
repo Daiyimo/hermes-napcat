@@ -466,6 +466,7 @@ bash scripts/logs-tail.sh -n 100 --grep napcat
 | 群聊无响应 | 默认需要 @机器人，可设 `NAPCAT_REQUIRE_MENTION=false` 关闭此限制 |
 | 转发消息无内容 | 检查 NapCat HTTP API 是否正常（转发展开依赖 HTTP `/get_forward_msg`） |
 | 管理员命令无效 | 确认 `NAPCAT_ADMIN_USERS` 包含你的 QQ 号，群聊中还需要同时 @机器人 |
+| 机器人回复冗长 / 误调 send_message | 在 `config.yaml` 的 `system_prompt` 追加：*你是 QQ 里的聊天机器人。你发出的每条消息，就是你对用户的回复。规则：1. 群聊 @你 = 对你说话，直接回 2. 私聊 = 一对一聊天，直接回 3. 任何对话中，严禁调用 send_message 工具 4. 你的回复就是最终答案，没有"已发送""已完成"这些事* |
 
 ```bash
 hermes status           # 查看 NapCat 平台配置状态
