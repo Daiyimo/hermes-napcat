@@ -352,6 +352,7 @@ NapCat 侧配 `websocketServers` 开 3001，Hermes 侧用容器名 `napcat` 作�
 | `NAPCAT_ADMIN_USERS` | 否 | 管理员 QQ 号，逗号分隔，允许执行 /mute /kick 等命令（管理员自动绕过授权白名单） |
 | `NAPCAT_REQUIRE_MENTION` | 否 | 群聊是否需要 @机器人 才触发（默认 `true`） |
 | `NAPCAT_ENABLE_REACTIONS` | 否 | 是否启用处理状态贴表情（思考 → 👍/😡，默认 `true`） |
+| `NAPCAT_REPLY_MODE` | 否 | 回复引用模式：`off` 不引用（默认），`first` 仅首段引用，`all` 全部引用 |
 
 ---
 

@@ -17,6 +17,7 @@ Configuration via environment variables:
     NAPCAT_ALLOW_ALL_USERS   - Set to "true" to allow any user (default if no allowlist)
     NAPCAT_REQUIRE_MENTION   - Set to "true" to require @mention in group chats (default: true)
     NAPCAT_ENABLE_REACTIONS  - Set to "false" to disable emoji reactions (default: true)
+    NAPCAT_REPLY_MODE       - "off" = never quote received message (default), "first", "all"
 """
 
 from __future__ import annotations
@@ -182,6 +183,9 @@ class NapCatAdapter(BasePlatformAdapter):
         # enable_reactions: auto emoji reaction on incoming messages (default True)
         _reactions_env = os.getenv("NAPCAT_ENABLE_REACTIONS", "true").strip().lower()
         self._enable_reactions: bool = _reactions_env not in ("false", "0", "no")
+        # reply_to_mode: "off" = never quote received message, "first" = first chunk, "all" = all chunks
+        _reply_env = os.getenv("NAPCAT_REPLY_MODE", "off").strip().lower()
+        self._reply_to_mode: str = _reply_env if _reply_env in ("off", "first", "all") else "off"
 
         # WS mode: "forward" = adapter connects to NapCat WS server (websocketServers)
         #          "reverse" = NapCat connects to adapter WS server (websocketClients)
@@ -945,6 +949,10 @@ class NapCatAdapter(BasePlatformAdapter):
     # Sending messages
     # ------------------------------------------------------------------
 
+    def _should_reply(self) -> bool:
+        """Return True if reply_to_mode allows quoting received messages."""
+        return self._reply_to_mode != "off"
+
     def format_message(self, content: str) -> str:
         """Strip markdown formatting for plain-text QQ delivery."""
         return strip_markdown(content)
@@ -966,7 +974,7 @@ class NapCatAdapter(BasePlatformAdapter):
 
         if len(chunks) == 1:
             segments = build_text_message(formatted)
-            if reply_to:
+            if reply_to and self._should_reply():
                 segments = build_reply_message(reply_to, segments)
             return await self._send_segments(chat_id, segments, metadata)
 
@@ -974,7 +982,7 @@ class NapCatAdapter(BasePlatformAdapter):
         last_result: Optional[SendResult] = None
         for i, chunk in enumerate(chunks):
             segments = build_text_message(chunk)
-            if reply_to and i == 0:
+            if reply_to and self._should_reply() and i == 0:
                 segments = build_reply_message(reply_to, segments)
             last_result = await self._send_segments(chat_id, segments, metadata)
             if last_result and not last_result.success:
@@ -996,7 +1004,7 @@ class NapCatAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         segments = build_image_message(image_url, caption)
-        if reply_to:
+        if reply_to and self._should_reply():
             segments = build_reply_message(reply_to, segments)
 
         return await self._send_segments(chat_id, segments, metadata)
@@ -1027,7 +1035,7 @@ class NapCatAdapter(BasePlatformAdapter):
 
         file_uri = _local_file_uri(audio_path)
         segments = build_voice_message(file_uri)
-        if reply_to:
+        if reply_to and self._should_reply():
             segments = build_reply_message(reply_to, segments)
 
         return await self._send_segments(chat_id, segments, metadata)
@@ -1046,7 +1054,7 @@ class NapCatAdapter(BasePlatformAdapter):
 
         file_uri = _local_file_uri(video_path)
         segments = build_video_message(file_uri, caption)
-        if reply_to:
+        if reply_to and self._should_reply():
             segments = build_reply_message(reply_to, segments)
 
         return await self._send_segments(chat_id, segments, metadata)
@@ -1067,7 +1075,7 @@ class NapCatAdapter(BasePlatformAdapter):
         file_uri = _local_file_uri(file_path)
         name = file_name or os.path.basename(file_path)
         segments = build_document_message(file_uri, name, caption)
-        if reply_to:
+        if reply_to and self._should_reply():
             segments = build_reply_message(reply_to, segments)
 
         return await self._send_segments(chat_id, segments, metadata)
