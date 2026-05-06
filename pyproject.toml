@@ -1,0 +1,57 @@
+# pyproject.toml — project and tool configuration for hermes-napcat
+# (no build system section — this is a pure adapter package, not distributed via PyPI)
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# Rule sets enabled:
+#   E / W  — pycodestyle errors and warnings
+#   F      — pyflakes (unused imports, undefined names, …)
+#   I      — isort (import ordering)
+#   UP     — pyupgrade (modern Python syntax)
+#   B      — flake8-bugbear (common bug patterns)
+#   SIM    — flake8-simplify (unnecessary complexity)
+#   RUF    — Ruff-native rules
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+
+ignore = [
+    # --- style / formatting disagreements ---
+    "E501",    # line too long — handled by formatter, not enforced as error
+    "RUF001",  # ambiguous unicode (Chinese comments are intentional)
+    "RUF002",  # ambiguous unicode in docstrings
+    "RUF003",  # ambiguous unicode in comments
+
+    # --- patterns that appear intentionally in this codebase ---
+    "B008",    # do not perform function calls in default arguments (false positives)
+    "SIM102",  # collapsible if — sometimes less readable
+    "SIM105",  # suppressible-exception — contextlib.suppress doesn't support `await`, keep try/except/pass
+    "SIM108",  # ternary operator — sometimes less readable
+    "RUF005",  # collection-literal-concatenation — [x] + list is clearer than [x, *list] here
+    "UP006",   # use `list` instead of `List` — kept for < 3.9 compat in type comments
+    "UP007",   # use `X | Y` instead of `Union[X, Y]` — kept for readability
+    "UP035",   # deprecated `typing` imports — intentional for broader compat
+
+    # --- false positives in gateway-stub pattern used by tests ---
+    "F401",    # unused imports inside TYPE_CHECKING blocks and __init__.py re-exports
+]
+
+# Never auto-fix these (too risky to apply blindly):
+unfixable = ["B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are allowed to use private members, assert statements, and magic values
+"tests/*" = ["SIM", "B", "RUF"]
+
+[tool.ruff.format]
+# Use double quotes, trailing commas, standard Python style
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+# Mirror the settings in tests/pytest.ini so `pytest` works from the root too
+testpaths = ["tests"]
+addopts   = "--import-mode=importlib"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,0 +1,47 @@
+# .pre-commit-config.yaml
+#
+# Local pre-commit hooks for hermes-napcat.
+# All hooks run entirely in your local Python environment — no network required after setup.
+#
+# Quick start:
+#   pip install pre-commit ruff
+#   pre-commit install          # installs the git hook
+#   pre-commit run --all-files  # manual full check
+#
+# The hook chain mirrors what a CI pipeline would enforce:
+#   1. ruff (lint)    — catches errors, unused imports, style issues
+#   2. ruff (format)  — enforces consistent formatting
+#   3. pytest         — runs the full test suite
+
+repos:
+  # ── ruff: lint ────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: ruff-lint
+        name: ruff (lint)
+        language: system
+        entry: python -m ruff check --force-exclude
+        types: [python]
+        pass_filenames: true
+        args: []
+
+  # ── ruff: format ──────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff (format)
+        language: system
+        entry: python -m ruff format --check --force-exclude
+        types: [python]
+        pass_filenames: true
+
+  # ── pytest ────────────────────────────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        language: system
+        entry: python -m pytest tests/ --tb=short -q
+        types: [python]
+        pass_filenames: false
+        always_run: true
