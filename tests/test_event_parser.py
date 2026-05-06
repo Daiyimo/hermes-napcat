@@ -8,8 +8,12 @@ import pytest
 from napcat.event_parser import (
     _FACE_MAP,
     _clean_cq_codes,
+    _guess_audio_extension,
+    _guess_extension,
+    _resolve_media_url,
     check_at_bot,
     extract_forward_ids,
+    extract_forward_text,
     extract_reply_id,
     parse_message_segments,
 )
@@ -180,3 +184,292 @@ class TestParseMessageSegments:
         text, media = parse_message_segments(segs)
         assert "Look:" in text
         assert len(media) == 1
+
+
+# ---------------------------------------------------------------------------
+# _guess_extension
+# ---------------------------------------------------------------------------
+
+
+class TestGuessExtension:
+    def test_jpg(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.jpg") == ".jpg"
+
+    def test_jpeg(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.jpeg") == ".jpeg"
+
+    def test_png(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.png") == ".png"
+
+    def test_gif(self):
+        assert _guess_extension("http://cdn.qq.com/img/anim.gif") == ".gif"
+
+    def test_webp(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.webp") == ".webp"
+
+    def test_bmp(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.bmp") == ".bmp"
+
+    def test_unknown_returns_default(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.xyz") == ".jpg"
+
+    def test_custom_default(self):
+        assert _guess_extension("http://cdn.qq.com/img/photo.xyz", default=".png") == ".png"
+
+    def test_case_insensitive(self):
+        # URL path is lowercased before matching
+        assert _guess_extension("http://cdn.qq.com/img/PHOTO.PNG") == ".png"
+
+    def test_query_string_ignored(self):
+        # Query params should not affect extension matching
+        result = _guess_extension("http://cdn.qq.com/img/photo.jpg?x=1&y=2")
+        assert result == ".jpg"
+
+
+# ---------------------------------------------------------------------------
+# _guess_audio_extension
+# ---------------------------------------------------------------------------
+
+
+class TestGuessAudioExtension:
+    def test_silk(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.silk") == ".silk"
+
+    def test_amr(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.amr") == ".amr"
+
+    def test_mp3(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.mp3") == ".mp3"
+
+    def test_ogg(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.ogg") == ".ogg"
+
+    def test_wav(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.wav") == ".wav"
+
+    def test_m4a(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.m4a") == ".m4a"
+
+    def test_unknown_returns_default_silk(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.xyz") == ".silk"
+
+    def test_custom_default(self):
+        assert _guess_audio_extension("http://cdn.qq.com/voice/file.xyz", default=".ogg") == ".ogg"
+
+
+# ---------------------------------------------------------------------------
+# _resolve_media_url
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMediaUrl:
+    # ── CDN URL（最高优先级）──────────────────────────────────────
+
+    def test_cdn_http_url_preferred(self):
+        data = {
+            "url": "http://cdn.qq.com/img.jpg",
+            "path": "/local/path/img.jpg",
+            "file": "file:///local/path/img.jpg",
+        }
+        url, is_local = _resolve_media_url(data)
+        assert url == "http://cdn.qq.com/img.jpg"
+        assert is_local is False
+
+    def test_cdn_https_url(self):
+        data = {"url": "https://cdn.qq.com/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "https://cdn.qq.com/img.jpg"
+        assert is_local is False
+
+    def test_cdn_url_not_matched_if_not_http(self):
+        # url 字段不是 http/https 时不应作为 CDN URL
+        data = {"url": "ftp://cdn.qq.com/img.jpg", "file": "file_id_123"}
+        url, is_local = _resolve_media_url(data)
+        # 应降级到 file 字段
+        assert url == "file_id_123"
+
+    # ── path 字段（NapCat 4.18+ 本地路径）───────────────────────
+
+    def test_path_unix_local(self):
+        data = {"path": "/var/napcat/cache/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "/var/napcat/cache/img.jpg"
+        assert is_local is True
+
+    def test_path_windows_local(self):
+        data = {"path": "C:/napcat/cache/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "C:/napcat/cache/img.jpg"
+        assert is_local is True
+
+    def test_path_ignored_if_not_absolute(self):
+        # 相对路径不应被当作本地路径
+        data = {"path": "relative/path/img.jpg", "file": "file_id_123"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "file_id_123"
+
+    # ── file 字段（多种格式）────────────────────────────────────
+
+    def test_file_uri_stripped_to_local_path(self):
+        data = {"file": "file:///var/napcat/cache/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "/var/napcat/cache/img.jpg"
+        assert is_local is True
+
+    def test_file_http_url(self):
+        data = {"file": "http://cdn.qq.com/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "http://cdn.qq.com/img.jpg"
+        assert is_local is False
+
+    def test_file_unix_absolute_path(self):
+        data = {"file": "/var/napcat/cache/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "/var/napcat/cache/img.jpg"
+        assert is_local is True
+
+    def test_file_windows_absolute_path(self):
+        data = {"file": "C:/napcat/cache/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "C:/napcat/cache/img.jpg"
+        assert is_local is True
+
+    def test_file_bare_id_treated_as_non_local(self):
+        # 裸 file_id（没有路径特征）应当作远程 ID，由 API 处理
+        data = {"file": "abc123def456"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "abc123def456"
+        assert is_local is False
+
+    # ── 空/缺字段 ───────────────────────────────────────────────
+
+    def test_all_empty_returns_empty(self):
+        url, is_local = _resolve_media_url({})
+        assert url == ""
+        assert is_local is False
+
+    def test_empty_url_falls_through_to_file(self):
+        data = {"url": "", "file": "http://cdn.qq.com/img.jpg"}
+        url, is_local = _resolve_media_url(data)
+        assert url == "http://cdn.qq.com/img.jpg"
+        assert is_local is False
+
+
+# ---------------------------------------------------------------------------
+# extract_forward_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractForwardText:
+    def test_none_returns_empty_placeholder(self):
+        assert extract_forward_text(None) == "[转发消息: 内容为空]"
+
+    def test_empty_dict_returns_empty_placeholder(self):
+        assert extract_forward_text({}) == "[转发消息: 内容为空]"
+
+    def test_empty_messages_list(self):
+        assert extract_forward_text({"messages": []}) == "[转发消息: 内容为空]"
+
+    def test_single_text_message(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"nickname": "Alice"},
+                    "content": [{"type": "text", "data": {"text": "Hello"}}],
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        assert "[转发聊天记录]:" in result
+        assert "Alice" in result
+        assert "Hello" in result
+
+    def test_sender_card_preferred_over_nickname(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"card": "群昵称", "nickname": "真实昵称"},
+                    "content": "text",
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        assert "群昵称" in result
+        assert "真实昵称" not in result
+
+    def test_fallback_to_user_id_when_no_name(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"user_id": 99999},
+                    "content": "some text",
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        assert "99999" in result
+
+    def test_string_content_cleaned(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"nickname": "Bob"},
+                    "content": "[CQ:face,id=14]hello",
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        assert "hello" in result
+        assert "CQ:face" not in result
+
+    def test_image_segment_replaced(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"nickname": "Bob"},
+                    "content": [{"type": "image", "data": {}}],
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        assert "[图片]" in result
+
+    def test_max_items_respected(self):
+        messages = [{"sender": {"nickname": f"User{i}"}, "content": f"msg{i}"} for i in range(20)]
+        result = extract_forward_text({"messages": messages}, max_items=3)
+        assert "msg0" in result
+        assert "msg2" in result
+        assert "msg3" not in result
+
+    def test_long_preview_truncated(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"nickname": "Alice"},
+                    "content": "x" * 300,
+                }
+            ]
+        }
+        result = extract_forward_text(data, max_preview=50)
+        # 每行格式是 "Name: content"，content 被截断后会有 "…"
+        assert "…" in result
+
+    def test_msgs_key_fallback(self):
+        # 某些 NapCat 版本返回 msgs 而不是 messages
+        data = {"msgs": [{"sender": {"nickname": "Charlie"}, "content": "hi there"}]}
+        result = extract_forward_text(data)
+        assert "Charlie" in result
+        assert "hi there" in result
+
+    def test_nested_forward_skipped(self):
+        data = {
+            "messages": [
+                {
+                    "sender": {"nickname": "Alice"},
+                    "content": [{"type": "forward", "data": {"id": "nested"}}],
+                }
+            ]
+        }
+        result = extract_forward_text(data)
+        # 嵌套转发内容被跳过，不会导致递归；整体结果为空占位符
+        assert result == "[转发消息: 内容为空]"

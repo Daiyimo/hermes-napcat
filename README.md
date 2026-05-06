@@ -490,7 +490,7 @@ pip install pytest pytest-asyncio
 # 从 tests/ 目录运行（pytest.ini 在此）
 cd tests
 python -m pytest . -v
-# 预期：99 passed, 2 skipped
+# 预期：188 passed, 2 skipped
 ```
 
 > 测试不依赖真实 NapCat 或 Hermes Gateway，所有网络依赖均通过 `tests/conftest.py` 中的 stub 隔离。

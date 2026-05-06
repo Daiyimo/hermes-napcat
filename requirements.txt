@@ -7,7 +7,7 @@
 # These should already be installed as part of Hermes Agent's [all] extras.
 # Only install separately if the adapter was cloned standalone.
 
-websockets>=12.0
+websockets>=14.0
 httpx>=0.27.0
 
 # Development / testing / linting dependencies
