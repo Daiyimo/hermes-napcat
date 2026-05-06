@@ -642,41 +642,35 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             print("  [3b-3] 警告：未找到 dispatch 函数，跳过 dispatch 插入")
     if dispatch_fn_anchor and (dispatch_fn_anchor == '__dispatch_chain__' or 'elif platform == Platform.NAPCAT:' not in content.split(dispatch_fn_anchor)[1]):
         inserted = False
-        # Try: insert before "not yet implemented" else clause (most reliable anchor)
-        else_anchor = 'else:\n            result = {"error": f"Direct sending not yet implemented for {platform.value}"'
-        if else_anchor in content:
-            content = content.replace(else_anchor, napcat_dispatch + '        ' + else_anchor, 1)
-            print("  [3b-3] napcat dispatch 插入成功（else 之前）")
-            any_patched = inserted = True
+        # Primary anchor: insert after QQBOT dispatch (most reliable)
+        qqbot_patterns = [
+            '        elif platform == Platform.QQBOT:\n            result = await _send_qqbot(pconfig, chat_id, chunk)\n',
+            '        elif platform == Platform.QQBOT:\n            result = _send_qqbot(pconfig, chat_id, chunk)\n',
+            '        elif Platform.QQBOT == platform:\n            result = await _send_qqbot(pconfig, chat_id, chunk)\n',
+        ]
+        for pattern in qqbot_patterns:
+            if pattern in content:
+                content = content.replace(pattern, pattern + napcat_dispatch, 1)
+                print("  [3b-3] napcat dispatch 插入成功（qqbot 之后）")
+                any_patched = inserted = True
+                break
 
         if not inserted:
-            # Fallback: insert after qqbot dispatch
-            for pattern in [
-                'elif platform == Platform.QQBOT:\n',
-                'elif Platform.QQBOT == platform:\n',
-                'elif Platform.QQBOT:\n',
-            ]:
-                if pattern in content:
-                    content = content.replace(pattern, pattern + napcat_dispatch, 1)
-                    print("  [3b-3] napcat dispatch 插入成功（qqbot 之后）")
-                    any_patched = inserted = True
-                    break
+            # Fallback: insert before "not yet implemented" else clause
+            else_anchor = 'else:\n            result = {"error": f"Direct sending not yet implemented for {platform.value}"'
+            if else_anchor in content:
+                content = content.replace(else_anchor, napcat_dispatch + '        ' + else_anchor, 1)
+                print("  [3b-3] napcat dispatch 插入成功（else 之前）")
+                any_patched = inserted = True
 
         if not inserted:
-            # Second fallback: regex for any else-with-error pattern
+            # Second fallback: regex for any elif platform branch
             import re
-            fallback = re.search(
-                r'(\n\s+else:\s*\n\s+result\s*=\s*\{[^}]*not yet implemented[^}]*\})',
-                content
-            )
-            if fallback:
-                content = content.replace(
-                    fallback.group(1),
-                    napcat_dispatch + fallback.group(1),
-                    1,
-                )
-                print("  [3b-3] napcat dispatch 插入成功（else 兜底）")
-                any_patched = True
+            m = re.search(r'(        elif platform == Platform\.[A-Z]+:)', content)
+            if m:
+                content = content[:m.start()] + napcat_dispatch + content[m.start():]
+                print("  [3b-3] napcat dispatch 插入成功（正则兜底）")
+                any_patched = inserted = True
             else:
                 print("  [3b-3] 警告：未找到 dispatch 插入点，请手动添加 napcat 分支")
 
@@ -760,7 +754,67 @@ if os.path.isfile(prompt_builder_py):
 else:
     print("  [3d] 跳过：未找到 prompt_builder.py（可选补丁）")
 
-# ── 3e: Patch session.py (Platform.NAPCAT branch comment) ──
+# ── 3e: Patch gateway/run.py (core GatewayRunner) ──
+# Adds NAPCAT support to GatewayRunner (enum, adapter creation, auth maps)
+run_py = os.path.join(hermes_home, 'gateway', 'run.py')
+if os.path.isfile(run_py):
+    content = open(run_py, encoding='utf-8').read()
+    patched = False
+
+    # 3e-1: Add NAPCAT to Platform enum
+    if 'NAPCAT = "napcat"' not in content:
+        content = content.replace('    QQBOT = "qqbot"', '    QQBOT = "qqbot"\n    NAPCAT = "napcat"')
+        patched = True
+        print("  [3e-1] Platform 枚举添加 NAPCAT")
+
+    # 3e-2: Add NAPCAT adapter branch in _create_adapter
+    if 'Platform.NAPCAT:' not in content:
+        napcat_adapter_code = '''
+        elif platform == Platform.NAPCAT:
+            from gateway.platforms.napcat import NapCatAdapter, check_napcat_requirements
+            if not check_napcat_requirements():
+                logger.warning("NapCat: aiohttp/httpx missing or NAPCAT_HTTP_URL/NAPCAT_WS_URL not configured")
+                return None
+            return NapCatAdapter(config)
+'''
+        # Try inserting after QQBOT branch
+        qqbot_anchor = '        elif platform == Platform.QQBOT:\n            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements\n            if not check_qq_requirements():\n                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")\n                return None\n            return QQAdapter(config)\n'
+        if qqbot_anchor in content:
+            content = content.replace(qqbot_anchor, qqbot_anchor + napcat_adapter_code, 1)
+            patched = True
+            print("  [3e-2] _create_adapter 添加 NAPCAT 分支")
+
+    # 3e-3: Add NAPCAT to _is_user_authorized maps
+    if 'Platform.NAPCAT: "NAPCAT_ALLOWED_USERS"' not in content:
+        content = content.replace(
+            '            Platform.QQBOT: "QQ_ALLOWED_USERS",',
+            '            Platform.QQBOT: "QQ_ALLOWED_USERS",\n            Platform.NAPCAT: "NAPCAT_ALLOWED_USERS",'
+        )
+        content = content.replace(
+            '            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",',
+            '            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",\n            Platform.NAPCAT: "NAPCAT_ALLOW_ALL_USERS",'
+        )
+        patched = True
+        print("  [3e-3] _is_user_authorized 添加 NAPCAT 权限映射")
+
+    # 3e-4: Add NAPCAT to _UPDATE_ALLOWED_PLATFORMS
+    if 'Platform.NAPCAT,' not in content:
+        content = content.replace(
+            '        Platform.QQBOT, Platform.LOCAL,',
+            '        Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,'
+        )
+        patched = True
+        print("  [3e-4] _UPDATE_ALLOWED_PLATFORMS 添加 NAPCAT")
+
+    if patched:
+        open(run_py, 'w', encoding='utf-8').write(content)
+        print("  [3e] run.py 修补完成")
+    else:
+        print("  [3e] run.py 无需修补")
+else:
+    print("  [3e] 跳过：未找到 run.py")
+
+# ── 3f: Patch session.py (Platform.NAPCAT branch comment) ──
 # Adds a runtime context branch so session logging / toolset selection
 # knows this is a QQ conversation, not a CLI or web session.
 session_py = os.path.join(hermes_home, 'gateway', 'session.py')
@@ -792,12 +846,13 @@ for check_file, patterns in [
     (platforms_py, ['"napcat"']),
     (send_msg_py, ['"napcat": Platform.NAPCAT', 'def _send_napcat(', 'elif platform == Platform.NAPCAT:']),
     (config_yaml, ['napcat:', 'hermes-napcat']),
+    (run_py, ['NAPCAT = "napcat"', 'Platform.NAPCAT:', 'NAPCAT_ALLOWED_USERS']),
 ]:
     if check_file and os.path.isfile(check_file):
         content = open(check_file, encoding='utf-8').read()
         for pat in patterns:
             if pat not in content:
-                errors.append(f"  \u2717 {check_file} 缺少 {pat}")
+                errors.append(f"  ✗ {check_file} 缺少 {pat}")
 
 if errors:
     print("\n  验证失败，以下补丁未生效：")
