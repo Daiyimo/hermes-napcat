@@ -84,6 +84,34 @@ success "Python: $($PYTHON_BIN --version 2>&1)"
 detect_git
 success "Git: $(git --version | awk '{print $3}')"
 
+# ── Check Python dependencies ──────────────────────────────────────
+check_python_deps() {
+    local missing=()
+
+    for dep in websockets httpx; do
+        if ! "$PYTHON_BIN" -c "import ${dep//-/_}" 2>/dev/null; then
+            missing+=("$dep")
+        fi
+    done
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        warn "缺少 Python 依赖：${missing[*]}"
+        info "尝试自动安装..."
+
+        # Try pip install
+        if "$PYTHON_BIN" -m pip install --quiet "${missing[@]}" 2>/dev/null; then
+            success "依赖安装成功：${missing[*]}"
+        else
+            error "自动安装失败，请手动运行：\n  $PYTHON_BIN -m pip install ${missing[*]}"
+        fi
+    else
+        success "Python 依赖检查通过（websockets, httpx）"
+    fi
+}
+
+# Only check deps after finding hermes home (to use correct Python env)
+# We'll call this after HERMES_HOME is detected
+
 # ── Locate hermes installation ──────────────────────────────────
 find_hermes_home() {
     local explicit="${1:-}"
@@ -139,6 +167,10 @@ if [ -z "$HERMES_HOME" ]; then
     exit 1
 fi
 info "hermes 安装目录：$HERMES_HOME"
+
+# ── Check Python dependencies ──────────────────────────────────────
+info "检查 Python 依赖..."
+check_python_deps
 
 PLATFORMS_DIR="$HERMES_HOME/gateway/platforms"
 GATEWAY_PY="$HERMES_HOME/hermes_cli/gateway.py"
