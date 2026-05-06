@@ -1,7 +1,25 @@
 """
 NapCat outgoing message builder.
 
-Constructs OneBot 11 message segment arrays for sending via the HTTP API.
+Constructs OneBot 11 message segment arrays that are posted to the NapCat
+HTTP API via ``/send_msg``.
+
+The module is split into two layers:
+
+**Segment factories** (low-level)
+    :func:`text_segment`, :func:`image_segment`, :func:`record_segment`,
+    :func:`video_segment`, :func:`file_segment`, :func:`at_segment`,
+    :func:`reply_segment` — each returns a single ``{"type": …, "data": …}``
+    dict as defined by the OneBot 11 specification.
+
+**Message builders** (high-level)
+    :func:`build_text_message`, :func:`build_image_message`,
+    :func:`build_voice_message`, :func:`build_video_message`,
+    :func:`build_document_message`, :func:`build_reply_message`,
+    :func:`build_mixed_message` — combine segments into complete message
+    arrays ready for the API.
+
+This module performs no I/O and has no side effects.
 """
 
 from __future__ import annotations
@@ -18,10 +36,10 @@ from .constants import (
     SEG_VIDEO,
 )
 
-
 # ---------------------------------------------------------------------------
 # Segment factories
 # ---------------------------------------------------------------------------
+
 
 def text_segment(text: str) -> Dict[str, Any]:
     """Build a text segment."""
@@ -71,6 +89,7 @@ def reply_segment(message_id: str) -> Dict[str, Any]:
 # High-level message builders
 # ---------------------------------------------------------------------------
 
+
 def build_text_message(text: str) -> List[Dict[str, Any]]:
     """Build a plain text message array."""
     return [text_segment(text)]
@@ -78,7 +97,7 @@ def build_text_message(text: str) -> List[Dict[str, Any]]:
 
 def build_image_message(
     file: str,
-    caption: Optional[str] = None,
+    caption: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Build a message with an image and optional caption text."""
     segments: List[Dict[str, Any]] = [image_segment(file)]
@@ -94,7 +113,7 @@ def build_voice_message(file: str) -> List[Dict[str, Any]]:
 
 def build_video_message(
     file: str,
-    caption: Optional[str] = None,
+    caption: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Build a video message with optional caption."""
     segments: List[Dict[str, Any]] = [video_segment(file)]
@@ -106,7 +125,7 @@ def build_video_message(
 def build_document_message(
     file: str,
     name: str = "",
-    caption: Optional[str] = None,
+    caption: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Build a file / document message with optional caption."""
     segments: List[Dict[str, Any]] = [file_segment(file, name)]
@@ -125,16 +144,34 @@ def build_reply_message(
 
 def build_mixed_message(
     text: str,
-    media_paths: Optional[List[str]] = None,
-    reply_to: Optional[str] = None,
+    media_paths: List[str] | None = None,
+    reply_to: str | None = None,
 ) -> List[Dict[str, Any]]:
-    """Build a message combining text and optional media attachments.
+    """Build a message that combines text with zero or more media attachments.
 
-    Media paths are classified by extension:
-    - ``.jpg``, ``.png``, ``.gif``, ``.webp`` → image
-    - ``.mp3``, ``.ogg``, ``.wav``, ``.silk``, ``.amr`` → voice
-    - ``.mp4``, ``.avi``, ``.mkv`` → video
-    - Everything else → file
+    Segment order: ``[reply?] [text?] [media…]``
+
+    Media files are classified by their file extension (case-insensitive):
+
+    ============ =============================================
+    Extension     Segment type
+    ============ =============================================
+    jpg/jpeg/png/gif/webp/bmp  ``image``
+    mp3/ogg/wav/silk/amr/m4a   ``record`` (voice)
+    mp4/avi/mkv/webm           ``video``
+    *anything else*            ``file``
+    ============ =============================================
+
+    Args:
+        text: Plain text content.  Pass an empty string to omit the text
+            segment.
+        media_paths: Optional list of local file paths to attach.  Each path
+            is classified and converted to a ``file:///`` URI automatically.
+        reply_to: Optional message ID to quote; prepended as a ``reply``
+            segment when provided.
+
+    Returns:
+        A list of OneBot 11 segment dicts ready for ``/send_msg``.
     """
     segments: List[Dict[str, Any]] = []
 
@@ -154,16 +191,25 @@ def build_mixed_message(
             segments.append(video_segment(path))
         else:
             import os
+
             segments.append(file_segment(path, name=os.path.basename(path)))
 
     return segments
 
 
 def _local_file_uri(path: str) -> str:
-    """Convert a local file path to a ``file:///`` URI."""
+    """Convert a local file path to a ``file:///`` URI.
+
+    Handles Windows drive-letter paths and URL-encodes spaces / special chars.
+    """
     import os
+    import sys
+    from urllib.parse import quote
+
     abspath = os.path.abspath(path)
-    # On Windows, paths start with drive letter — need extra slash
-    if not abspath.startswith("/"):
-        abspath = "/" + abspath.replace("\\", "/")
-    return f"file://{abspath}"
+    if sys.platform == "win32":
+        # Windows: C:\Users\foo bar\a.png → file:///C:/Users/foo%20bar/a.png
+        encoded = quote(abspath.replace("\\", "/"), safe=":/")
+        return f"file:///{encoded}"
+    else:
+        return f"file://{quote(abspath, safe='/')}"

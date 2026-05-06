@@ -122,3 +122,45 @@ RESP_STATUS_OK = "ok"
 RESP_STATUS_ASYNC = "async"
 RESP_STATUS_FAILED = "failed"
 RESP_RETCODE_OK = 0
+
+# ---------------------------------------------------------------------------
+# Group management limits
+# ---------------------------------------------------------------------------
+MUTE_MAX_MINUTES = 43200  # 30 days — QQ upper bound for set_group_ban
+
+# ---------------------------------------------------------------------------
+# Emoji reaction IDs (set_msg_emoji_like)
+# ---------------------------------------------------------------------------
+EMOJI_THINKING = "32"  # 🤫 — set when processing starts
+EMOJI_SUCCESS = "76"  # 👍 — set on success
+EMOJI_FAILURE = "326"  # 😡 — set on failure
+
+# ---------------------------------------------------------------------------
+# Message chunking
+# ---------------------------------------------------------------------------
+CHUNK_SEND_DELAY = 0.3  # seconds between consecutive message chunks (rate-limit guard)
+
+# ---------------------------------------------------------------------------
+# Observability — latency buffer
+# ---------------------------------------------------------------------------
+METRICS_LATENCY_BUFFER = 50  # ring-buffer size for recv/send latency samples
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+CB_FAILURE_THRESHOLD = 5  # consecutive failures in CLOSED state before tripping to OPEN
+CB_OPEN_TIMEOUT_S = 30.0  # seconds the breaker stays OPEN before entering HALF_OPEN
+CB_SUCCESS_THRESHOLD = 2  # consecutive successes in HALF_OPEN before returning to CLOSED
+CB_HALF_OPEN_PROBE = 1  # max probe requests allowed through in HALF_OPEN state
+
+# ---------------------------------------------------------------------------
+# Alert engine
+# ---------------------------------------------------------------------------
+ALERT_WINDOW_S = 60.0  # sliding window width for rate-based rules
+ALERT_ERROR_SPIKE_THRESHOLD = 10  # errors within ALERT_WINDOW_S that fire error_spike
+ALERT_RECONNECT_BURST_THRESHOLD = 5  # reconnects within ALERT_WINDOW_S that fire ws_reconnect_burst
+ALERT_SEND_FAILURE_RATE_THRESHOLD = 0.5  # fraction (0–1) that fires send_failure_rate
+ALERT_NO_HEARTBEAT_S = 90.0  # seconds without heartbeat before firing no_heartbeat
+ALERT_COOLDOWN_S = 120.0  # per-rule cooldown for WARNING alerts
+ALERT_CRITICAL_COOLDOWN_S = 60.0  # per-rule cooldown for CRITICAL alerts
+ALERT_TICK_INTERVAL_S = 30.0  # how often _alert_loop calls obs.tick()

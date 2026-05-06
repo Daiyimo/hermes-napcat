@@ -9,9 +9,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+import httpx
+
 from .constants import (
     API_TIMEOUT,
     RESP_RETCODE_OK,
+    RESP_STATUS_ASYNC,
     RESP_STATUS_OK,
 )
 
@@ -21,6 +24,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # OneBot 11 HTTP API caller
 # ---------------------------------------------------------------------------
+
 
 class OneBotAPIError(Exception):
     """Raised when a OneBot 11 API call fails."""
@@ -35,11 +39,11 @@ class OneBotAPIError(Exception):
 
 
 async def api_call(
-    http_client,
+    http_client: httpx.AsyncClient,
     base_url: str,
     endpoint: str,
-    data: Optional[Dict[str, Any]] = None,
-    token: Optional[str] = None,
+    data: Dict[str, Any] | None = None,
+    token: str | None = None,
     timeout: float = API_TIMEOUT,
 ) -> Dict[str, Any]:
     """Make a POST request to a OneBot 11 HTTP API endpoint.
@@ -60,8 +64,6 @@ async def api_call(
         OneBotAPIError: If ``retcode != 0`` in the response.
         httpx.HTTPError: On transport-level failures.
     """
-    import httpx as _httpx
-
     url = f"{base_url.rstrip('/')}{endpoint}"
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if token:
@@ -77,7 +79,7 @@ async def api_call(
     status = envelope.get("status", "")
     retcode = envelope.get("retcode", -1)
 
-    if retcode != RESP_RETCODE_OK and status != RESP_STATUS_OK:
+    if retcode != RESP_RETCODE_OK or status not in (RESP_STATUS_OK, RESP_STATUS_ASYNC):
         raise OneBotAPIError(
             endpoint=endpoint,
             retcode=retcode,
@@ -90,19 +92,17 @@ async def api_call(
 
 
 async def api_call_raw(
-    http_client,
+    http_client: httpx.AsyncClient,
     base_url: str,
     endpoint: str,
-    data: Optional[Dict[str, Any]] = None,
-    token: Optional[str] = None,
+    data: Dict[str, Any] | None = None,
+    token: str | None = None,
     timeout: float = API_TIMEOUT,
 ) -> Dict[str, Any]:
     """Like :func:`api_call` but returns the full response envelope.
 
     Useful when the caller needs to inspect ``status``, ``retcode``, etc.
     """
-    import httpx as _httpx
-
     url = f"{base_url.rstrip('/')}{endpoint}"
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if token:
@@ -117,9 +117,11 @@ async def api_call_raw(
 # Logging helpers
 # ---------------------------------------------------------------------------
 
+
 def _summarise_body(body: Dict[str, Any], max_len: int = 200) -> str:
     """Return a short string representation of *body* for debug logs."""
     import json
+
     raw = json.dumps(body, ensure_ascii=False)
     if len(raw) <= max_len:
         return raw
@@ -133,6 +135,7 @@ def redact_qq_number(text: str) -> str:
     Avoids false positives from broad digit patterns.
     """
     import re
+
     return re.sub(
         r"(user_id|group_id|self_id|qq)\s*[=:]\s*(\d{5,11})",
         lambda m: f"{m.group(1)}={m.group(2)[:3]}***",
