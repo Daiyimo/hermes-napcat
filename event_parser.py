@@ -1,8 +1,18 @@
 """
 NapCat event parser.
 
-Converts incoming OneBot 11 event payloads into Hermes ``MessageEvent``
-instances and extracts media attachments.
+Converts incoming OneBot 11 event payloads into plain Python structures
+that the adapter can forward to the Hermes gateway.  The key public
+functions are:
+
+* :func:`parse_message_segments` — turn a segment array into ``(text, media_list)``
+* :func:`extract_reply_id` — find the quoted message ID, if any
+* :func:`extract_forward_ids` — collect IDs for forwarded-message expansion
+* :func:`extract_forward_text` — format an expanded forward payload as text
+* :func:`check_at_bot` — detect whether the bot's QQ was @-mentioned
+
+No network I/O is performed here; all data comes from the already-parsed
+event dict received over WebSocket.
 """
 
 from __future__ import annotations
@@ -30,15 +40,15 @@ logger = logging.getLogger(__name__)
 
 # QQ built-in face emoji → rough unicode mapping (subset)
 _FACE_MAP: Dict[int, str] = {
-    0: "\U0001f62e",   # Surprised
-    1: "\U0001f621",   # Tut-tut
-    2: "\U0001f60d",   # Heart eyes
-    4: "\U0001f60e",   # Cool
-    5: "\U0001f62d",   # Cry
-    6: "\U0001f633",   # Embarrassed
-    7: "\U0001f636",   # Shutup
-    8: "\U0001f634",   # Sleep
-    9: "\U0001f62d",   # Cry loudly
+    0: "\U0001f62e",  # Surprised
+    1: "\U0001f621",  # Tut-tut
+    2: "\U0001f60d",  # Heart eyes
+    4: "\U0001f60e",  # Cool
+    5: "\U0001f62d",  # Cry
+    6: "\U0001f633",  # Embarrassed
+    7: "\U0001f636",  # Shutup
+    8: "\U0001f634",  # Sleep
+    9: "\U0001f62d",  # Cry loudly
     10: "\U0001f616",  # Embarrassed
     11: "\U0001f620",  # Angry
     12: "\U0001f61c",  # Tongue out
@@ -69,12 +79,12 @@ _FACE_MAP: Dict[int, str] = {
     63: "\U0001f339",  # Rose
     66: "\U00002764",  # Heart
     67: "\U0001f494",  # Broken heart
-    74: "\u2600\ufe0f", # Sun
+    74: "\u2600\ufe0f",  # Sun
     75: "\U0001f319",  # Moon
     76: "\U0001f44d",  # Thumbs up
     77: "\U0001f44e",  # Thumbs down
     78: "\U0001f44c",  # OK
-    79: "\u270c\ufe0f", # Victory
+    79: "\u270c\ufe0f",  # Victory
     85: "\U0001f48a",  # Pill
     86: "\U0001f52b",  # Gun
     89: "\U0001f4a3",  # Bomb
@@ -82,28 +92,37 @@ _FACE_MAP: Dict[int, str] = {
     97: "\U0001f613",  # Shame
     98: "\U0001f604",  # Happy
     99: "\U0001f612",  # Unamused
-    100: "\U0001f624", # Triumph
-    101: "\U0001f62a", # Sleepy
-    104: "\U0001f609", # Wink
-    106: "\U0001f60a", # Blush
-    109: "\U0001f48b", # Kiss
-    111: "\U0001f4a8", # Scared
-    116: "\U0001f44b", # Wave
-    118: "\U0001f64f", # Pray
-    120: "\U0001f4aa", # Flex
-    122: "\U0001f44a", # Punch
-    123: "\U0001f91e", # Crossed fingers
-    124: "\U0001f64f", # Folded hands
-    147: "\U0001f382", # Birthday cake
-    171: "\U00002615", # Tea
-    174: "\U0001f381", # Gift
-    178: "\U0001f680", # Rocket
-    179: "\U0001f3b5", # Music
+    100: "\U0001f624",  # Triumph
+    101: "\U0001f62a",  # Sleepy
+    104: "\U0001f609",  # Wink
+    106: "\U0001f60a",  # Blush
+    109: "\U0001f48b",  # Kiss
+    111: "\U0001f4a8",  # Scared
+    116: "\U0001f44b",  # Wave
+    118: "\U0001f64f",  # Pray
+    120: "\U0001f4aa",  # Flex
+    122: "\U0001f44a",  # Punch
+    123: "\U0001f91e",  # Crossed fingers
+    124: "\U0001f64f",  # Folded hands
+    147: "\U0001f382",  # Birthday cake
+    171: "\U00002615",  # Tea
+    174: "\U0001f381",  # Gift
+    178: "\U0001f680",  # Rocket
+    179: "\U0001f3b5",  # Music
 }
 
 
 def _guess_extension(url: str, default: str = ".jpg") -> str:
-    """Guess a file extension from a URL path."""
+    """Guess an image file extension from a URL path component.
+
+    Args:
+        url: The URL to inspect (only the path is examined).
+        default: Fallback extension when none is recognised.
+
+    Returns:
+        The lowercase extension string including the leading dot,
+        e.g. ``".png"``.
+    """
     parsed = urlparse(url)
     path = parsed.path.lower()
     for ext in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"):
@@ -113,7 +132,15 @@ def _guess_extension(url: str, default: str = ".jpg") -> str:
 
 
 def _guess_audio_extension(url: str, default: str = ".silk") -> str:
-    """Guess an audio file extension from a URL path."""
+    """Guess an audio file extension from a URL path component.
+
+    Args:
+        url: The URL to inspect.
+        default: Fallback extension; defaults to ``".silk"`` (QQ native format).
+
+    Returns:
+        The lowercase extension string including the leading dot.
+    """
     parsed = urlparse(url)
     path = parsed.path.lower()
     for ext in (".silk", ".amr", ".mp3", ".ogg", ".wav", ".m4a"):
@@ -141,7 +168,9 @@ def _resolve_media_url(data: Dict[str, Any]) -> tuple[str, bool]:
 
     # Explicit local path field (NapCat 4.18+)
     path_field = data.get("path", "")
-    if path_field and (path_field.startswith("/") or (len(path_field) > 1 and path_field[1] == ":")):
+    if path_field and (
+        path_field.startswith("/") or (len(path_field) > 1 and path_field[1] == ":")
+    ):
         return path_field, True
 
     # file field — could be local path, file:/// URI, or file_id
@@ -162,8 +191,24 @@ def _resolve_media_url(data: Dict[str, Any]) -> tuple[str, bool]:
 
 
 def _clean_cq_codes(text: str) -> str:
-    """Strip CQ-code tags from a plain string message."""
+    """Strip CQ-code tags from a plain-string message.
+
+    NapCat occasionally sends messages in legacy CQ-code string format even
+    when ``messagePostFormat`` is set to ``array``.  This function normalises
+    those strings so they are human-readable:
+
+    * ``[CQ:face,id=N]`` → ``[表情]``
+    * ``[CQ:image,…]`` → ``[图片]``
+    * All other ``[CQ:…]`` tags are removed entirely.
+
+    Args:
+        text: Raw message string potentially containing CQ codes.
+
+    Returns:
+        Cleaned plain text with CQ codes replaced or removed.
+    """
     import re
+
     # Replace face codes with placeholder
     text = re.sub(r"\[CQ:face,id=\d+\]", "[表情]", text)
     # Replace image codes with placeholder
@@ -251,9 +296,10 @@ def extract_forward_text(forward_data: Any, max_items: int = 10, max_preview: in
 # Segment parser
 # ---------------------------------------------------------------------------
 
+
 def parse_message_segments(
     segments: list,
-    forward_texts: Optional[Dict[str, str]] = None,
+    forward_texts: Dict[str, str] | None = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Parse an OneBot 11 message segment array.
 
@@ -273,7 +319,7 @@ def parse_message_segments(
     """
     text_parts: List[str] = []
     media_list: List[Dict[str, Any]] = []
-    reply_id: Optional[str] = None
+    reply_id: str | None = None
 
     for seg in segments:
         seg_type = seg.get("type", "")
@@ -286,12 +332,14 @@ def parse_message_segments(
             url, is_local = _resolve_media_url(data)
             if url:
                 ext = _guess_extension(url)
-                media_list.append({
-                    "url": url,
-                    "type": "image",
-                    "ext": ext,
-                    "is_local": is_local,
-                })
+                media_list.append(
+                    {
+                        "url": url,
+                        "type": "image",
+                        "ext": ext,
+                        "is_local": is_local,
+                    }
+                )
             # Some clients also put text in the "summary" field
             summary = data.get("summary")
             if summary:
@@ -301,12 +349,14 @@ def parse_message_segments(
             url, is_local = _resolve_media_url(data)
             if url:
                 ext = _guess_audio_extension(url)
-                media_list.append({
-                    "url": url,
-                    "type": "audio",
-                    "ext": ext,
-                    "is_local": is_local,
-                })
+                media_list.append(
+                    {
+                        "url": url,
+                        "type": "audio",
+                        "ext": ext,
+                        "is_local": is_local,
+                    }
+                )
 
         elif seg_type == SEG_VIDEO:
             url, is_local = _resolve_media_url(data)
@@ -315,25 +365,29 @@ def parse_message_segments(
                 ext = os.path.splitext(url)[1].lower() or ".mp4"
                 if ext not in (".mp4", ".avi", ".mkv", ".mov", ".webm"):
                     ext = ".mp4"
-                media_list.append({
-                    "url": url,
-                    "type": "video",
-                    "ext": ext,
-                    "is_local": is_local,
-                })
+                media_list.append(
+                    {
+                        "url": url,
+                        "type": "video",
+                        "ext": ext,
+                        "is_local": is_local,
+                    }
+                )
 
         elif seg_type == SEG_FILE:
             url, is_local = _resolve_media_url(data)
             name = data.get("name", "file")
             if url:
                 ext = os.path.splitext(name)[1] or ""
-                media_list.append({
-                    "url": url,
-                    "type": "document",
-                    "ext": ext,
-                    "file_name": name,
-                    "is_local": is_local,
-                })
+                media_list.append(
+                    {
+                        "url": url,
+                        "type": "document",
+                        "ext": ext,
+                        "file_name": name,
+                        "is_local": is_local,
+                    }
+                )
 
         elif seg_type == SEG_AT:
             qq = data.get("qq", "")
@@ -346,7 +400,7 @@ def parse_message_segments(
                 text_parts.append(f"@{qq}")
 
         elif seg_type == SEG_REPLY:
-            reply_id = str(data.get("id", ""))
+            reply_id = str(data.get("id", ""))  # noqa: F841 — reply handled by extract_reply_id()
 
         elif seg_type == SEG_FACE:
             face_id = data.get("id")
@@ -373,7 +427,7 @@ def parse_message_segments(
     return text, media_list
 
 
-def extract_reply_id(segments: list) -> Optional[str]:
+def extract_reply_id(segments: list) -> str | None:
     """Extract the reply-to message ID from a segment array, if present."""
     for seg in segments:
         if seg.get("type") == SEG_REPLY:

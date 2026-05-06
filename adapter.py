@@ -28,7 +28,8 @@ import logging
 import os
 import random
 import time
-from typing import Any, Dict, List, Optional
+from collections import OrderedDict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 try:
     import websockets
@@ -61,7 +62,7 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import strip_markdown
 
 from .constants import (
-    API_TIMEOUT,
+    ALERT_TICK_INTERVAL_S,
     API_DELETE_MSG,
     API_GET_FORWARD_MSG,
     API_GET_GROUP_INFO,
@@ -69,8 +70,13 @@ from .constants import (
     API_GET_STRANGER_INFO,
     API_SEND_MSG,
     API_SET_MSG_EMOJI_LIKE,
+    API_TIMEOUT,
+    CHUNK_SEND_DELAY,
     DEDUP_MAX_SIZE,
     DEDUP_WINDOW_SECONDS,
+    EMOJI_FAILURE,
+    EMOJI_SUCCESS,
+    EMOJI_THINKING,
     HEARTBEAT_INTERVAL,
     MAX_MESSAGE_LENGTH,
     MEDIA_DOWNLOAD_TIMEOUT,
@@ -101,6 +107,7 @@ from .event_parser import (
     extract_reply_id,
     parse_message_segments,
 )
+from .group_commands import AdminCmdContext, handle_group_command, is_admin
 from .message_builder import (
     _local_file_uri,
     build_document_message,
@@ -111,8 +118,8 @@ from .message_builder import (
     build_video_message,
     build_voice_message,
 )
+from .observability import Observability
 from .utils import OneBotAPIError, api_call
-from .group_commands import AdminCmdContext, handle_group_command, is_admin
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +137,36 @@ def check_napcat_requirements() -> bool:
 
 
 class NapCatAdapter(BasePlatformAdapter):
-    """NapCat adapter using OneBot 11 Forward-WS (events) + HTTP API (actions)."""
+    """NapCat adapter — OneBot 11 over WebSocket + HTTP.
+
+    Bridges between the Hermes Agent gateway and a running NapCat instance.
+    Supports two WebSocket topologies:
+
+    **Forward mode** (default, ``NAPCAT_WS_MODE=forward``):
+        The adapter connects to NapCat's WS Server (``websocketServers``).
+        NapCat pushes events; the adapter sends actions via HTTP POST.
+
+    **Reverse mode** (``NAPCAT_WS_MODE=reverse``):
+        The adapter runs a WS Server; NapCat connects as a client
+        (``websocketClients``).  Useful when NapCat cannot reach the adapter
+        host directly (e.g. behind a NAT).
+
+    Configuration is driven entirely by environment variables — see README
+    for the full reference.  The adapter is auto-discovered by the gateway
+    via ``plugin.yaml`` and registered through ``platform_registry``.
+
+    Attributes:
+        SUPPORTS_MESSAGE_EDITING: Always ``False`` (OneBot 11 limitation).
+        MAX_MESSAGE_LENGTH: Maximum characters per outgoing message chunk
+            (4 500).  Longer content is split automatically.
+    """
 
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     @property
     def _log_tag(self) -> str:
+        """Logging prefix that includes the bot's QQ number once known."""
         self_id = getattr(self, "_self_id", None)
         if self_id:
             return f"NapCat:{self_id}"
@@ -150,31 +180,41 @@ class NapCatAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.NAPCAT)
 
         extra = config.extra or {}
-        self._http_url: str = str(
-            extra.get("http_url") or os.getenv("NAPCAT_HTTP_URL", "")
-        ).strip().rstrip("/")
-        self._ws_url: str = str(
-            extra.get("ws_url") or os.getenv("NAPCAT_WS_URL", "")
-        ).strip().rstrip("/")
+        self._http_url: str = (
+            str(extra.get("http_url") or os.getenv("NAPCAT_HTTP_URL", "")).strip().rstrip("/")
+        )
+        self._ws_url: str = (
+            str(extra.get("ws_url") or os.getenv("NAPCAT_WS_URL", "")).strip().rstrip("/")
+        )
         self._token: str = str(
             config.token or extra.get("token") or os.getenv("NAPCAT_TOKEN", "")
         ).strip()
 
         # Bot's own QQ number — populated during connect via /get_login_info
-        self._self_id: Optional[str] = None
-        self._self_name: Optional[str] = None
+        self._self_id: str | None = None
+        self._self_name: str | None = None
 
         # Connection state
-        self._ws: Any = None  # websockets connection (client or server-accepted)
-        self._ws_server: Any = None  # websockets server (reverse mode only)
-        self._http_client: Any = None  # httpx.AsyncClient
-        self._listen_task: Optional[asyncio.Task] = None
+        if TYPE_CHECKING:
+            import httpx as _httpx
+            import websockets.client as _wsclient
+            import websockets.server as _wsserver
+        self._ws: Any | None = None  # websockets connection (client or server-accepted)
+        self._ws_server: Any | None = None  # websockets server (reverse mode only)
+        self._http_client: Any | None = None  # httpx.AsyncClient
+        self._listen_task: asyncio.Task | None = None
 
-        # Message deduplication
-        self._seen_messages: Dict[str, float] = {}
+        # Message deduplication — OrderedDict preserves insertion order for O(1) eviction
+        self._seen_messages: OrderedDict[str, float] = OrderedDict()
 
         # Chat type tracking: chat_id → "private" | "group"
         self._chat_type_map: Dict[str, str] = {}
+
+        # Observability: metrics + circuit breaker + alert engine
+        self._obs: Observability = Observability()
+
+        # Background alert loop task (started in connect())
+        self._alert_task: asyncio.Task | None = None
 
         # Feature flags
         # require_mention: whether group messages require @bot to trigger (default True)
@@ -196,14 +236,15 @@ class NapCatAdapter(BasePlatformAdapter):
         self._ws_listen_port: int = 3002
         if self._ws_mode == "reverse" and self._ws_url:
             from urllib.parse import urlparse
+
             parsed = urlparse(self._ws_url)
             self._ws_listen_host = parsed.hostname or "127.0.0.1"
             self._ws_listen_port = parsed.port or 3002
 
         # Authorized users cache (lazy-loaded)
-        self._allowed_users_cache: Optional[set] = None
-        self._allowed_group_users_cache: Optional[set] = None
-        self._allow_all_users: Optional[bool] = None
+        self._allowed_users_cache: set | None = None
+        self._allowed_group_users_cache: set | None = None
+        self._allow_all_users: bool | None = None
 
     @property
     def name(self) -> str:
@@ -284,6 +325,12 @@ class NapCatAdapter(BasePlatformAdapter):
                     self._ws_listen_loop(), name=f"napcat-ws-{self._self_id or 'unknown'}"
                 )
 
+            # 4. Start periodic alert loop
+            self._alert_task = asyncio.create_task(
+                self._alert_loop(), name=f"napcat-alerts-{self._self_id or 'unknown'}"
+            )
+
+            self._obs.metrics.ws_connected = True
             self._mark_connected()
             logger.info(
                 "[%s] Connected — HTTP=%s WS=%s mode=%s",
@@ -308,6 +355,16 @@ class NapCatAdapter(BasePlatformAdapter):
         """Close all connections and stop listeners."""
         self._running = False
         self._mark_disconnected()
+
+        self._obs.metrics.ws_connected = False
+
+        if self._alert_task:
+            self._alert_task.cancel()
+            try:
+                await self._alert_task
+            except asyncio.CancelledError:
+                pass
+            self._alert_task = None
 
         if self._listen_task:
             self._listen_task.cancel()
@@ -356,19 +413,21 @@ class NapCatAdapter(BasePlatformAdapter):
         connection is accepted seamlessly.
         """
 
-        self._ws_server: Optional[Any] = None
+        self._ws_server: Any | None = None
 
         async def on_connect(ws: Any) -> None:
             """Handle an incoming NapCat connection."""
             if self._ws is not None:
                 logger.info(
                     "[%s] New NapCat connection from %s (replacing existing)",
-                    self._log_tag, ws.remote_address,
+                    self._log_tag,
+                    ws.remote_address,
                 )
             else:
                 logger.info(
                     "[%s] NapCat connected from %s",
-                    self._log_tag, ws.remote_address,
+                    self._log_tag,
+                    ws.remote_address,
                 )
             self._ws = ws
             try:
@@ -383,7 +442,9 @@ class NapCatAdapter(BasePlatformAdapter):
                     except Exception as exc:
                         logger.error(
                             "[%s] Error dispatching event: %s",
-                            self._log_tag, exc, exc_info=True,
+                            self._log_tag,
+                            exc,
+                            exc_info=True,
                         )
             except asyncio.CancelledError:
                 pass
@@ -402,7 +463,9 @@ class NapCatAdapter(BasePlatformAdapter):
             )
             logger.info(
                 "[%s] Reverse WS server listening on %s:%d",
-                self._log_tag, self._ws_listen_host, self._ws_listen_port,
+                self._log_tag,
+                self._ws_listen_host,
+                self._ws_listen_port,
             )
             # Keep the server alive until shutdown
             while self._running:
@@ -412,7 +475,9 @@ class NapCatAdapter(BasePlatformAdapter):
         except Exception as exc:
             if self._running:
                 self._set_fatal_error("napcat_ws_server_error", str(exc), retryable=True)
-                logger.error("[%s] Reverse WS server crashed: %s", self._log_tag, exc, exc_info=True)
+                logger.error(
+                    "[%s] Reverse WS server crashed: %s", self._log_tag, exc, exc_info=True
+                )
         finally:
             if self._ws_server:
                 self._ws_server.close()
@@ -447,6 +512,7 @@ class NapCatAdapter(BasePlatformAdapter):
                 )
 
                 attempt = 0  # reset backoff on successful connect
+                self._obs.metrics.ws_connected = True
                 logger.info("[%s] WebSocket connected to %s", self._log_tag, self._ws_url)
 
                 async for raw_msg in self._ws:
@@ -471,6 +537,8 @@ class NapCatAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if not self._running:
                     return
+                self._obs.metrics.ws_connected = False
+                self._obs.metrics.record_reconnect()
                 attempt += 1
                 if attempt > RECONNECT_MAX_ATTEMPTS:
                     msg = f"Exceeded max reconnect attempts ({RECONNECT_MAX_ATTEMPTS})"
@@ -496,6 +564,24 @@ class NapCatAdapter(BasePlatformAdapter):
                 await asyncio.sleep(wait)
             finally:
                 self._ws = None
+
+    # ------------------------------------------------------------------
+    # Alert loop
+    # ------------------------------------------------------------------
+
+    async def _alert_loop(self) -> None:
+        """Periodically tick the observability engine to evaluate alert rules.
+
+        Runs every :data:`ALERT_TICK_INTERVAL_S` seconds in the background.
+        Cancelled cleanly on :meth:`disconnect`.
+        """
+        try:
+            while self._running:
+                await asyncio.sleep(ALERT_TICK_INTERVAL_S)
+                if self._running:
+                    self._obs.tick()
+        except asyncio.CancelledError:
+            logger.debug("[%s] Alert loop cancelled", self._log_tag)
 
     # ------------------------------------------------------------------
     # Event dispatch
@@ -524,6 +610,7 @@ class NapCatAdapter(BasePlatformAdapter):
         meta_type = data.get("meta_event_type", "")
         if meta_type == META_EVENT_HEARTBEAT:
             logger.debug("[%s] Heartbeat received", self._log_tag)
+            self._obs.metrics.record_heartbeat()
         elif meta_type == META_EVENT_LIFECYCLE:
             sub_type = data.get("sub_type", "")
             logger.info("[%s] Lifecycle event: %s", self._log_tag, sub_type)
@@ -538,13 +625,23 @@ class NapCatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _load_authorization(self) -> None:
-        """Lazy-load the authorization allowlists from environment variables."""
+        """Lazily load user allowlists from environment variables.
+
+        Called on the first message that requires an authorization check.
+        Reads ``NAPCAT_ALLOWED_USERS``, ``NAPCAT_GROUP_ALLOWED_USERS``, and
+        ``NAPCAT_ALLOW_ALL_USERS`` and caches the results for the lifetime of
+        the adapter.
+        """
         if self._allowed_users_cache is not None:
             return
         raw = os.getenv("NAPCAT_ALLOWED_USERS", "").strip()
-        self._allowed_users_cache = {u.strip() for u in raw.split(",") if u.strip()} if raw else set()
+        self._allowed_users_cache = (
+            {u.strip() for u in raw.split(",") if u.strip()} if raw else set()
+        )
         raw_group = os.getenv("NAPCAT_GROUP_ALLOWED_USERS", "").strip()
-        self._allowed_group_users_cache = {u.strip() for u in raw_group.split(",") if u.strip()} if raw_group else set()
+        self._allowed_group_users_cache = (
+            {u.strip() for u in raw_group.split(",") if u.strip()} if raw_group else set()
+        )
         allow_all = os.getenv("NAPCAT_ALLOW_ALL_USERS", "").strip().lower()
         self._allow_all_users = allow_all in ("true", "1", "yes")
 
@@ -581,12 +678,25 @@ class NapCatAdapter(BasePlatformAdapter):
         if not self._dedup_check(message_id):
             return
 
+        m = self._obs.metrics
+        m.messages_received += 1
+        m.last_message_at = time.monotonic()
+
+        # Record receive-side latency (event.time is a Unix timestamp in seconds)
+        event_time = data.get("time")
+        if event_time:
+            recv_latency_ms = (time.time() - float(event_time)) * 1000
+            m.record_recv_latency(recv_latency_ms)
+
         try:
             await self._handle_message_event_inner(data, message_id, user_id, message_type)
         except Exception:
+            m.record_error()
             logger.error(
                 "[%s] Unhandled error processing message %s — skipping",
-                self._log_tag, message_id, exc_info=True,
+                self._log_tag,
+                message_id,
+                exc_info=True,
             )
 
     async def _handle_message_event_inner(
@@ -615,7 +725,7 @@ class NapCatAdapter(BasePlatformAdapter):
         self._chat_type_map[chat_id] = message_type
 
         # Determine whether this is a group chat (reused below)
-        is_group = (message_type == MSG_TYPE_GROUP)
+        is_group = message_type == MSG_TYPE_GROUP
 
         # User authorization gate (admins always bypass)
         if not is_admin(user_id) and not self._is_user_authorized(user_id, is_group=is_group):
@@ -713,6 +823,7 @@ class NapCatAdapter(BasePlatformAdapter):
                 segments=segments if isinstance(segments, list) else [],
                 event_time=data.get("time"),
                 self_name=self._self_name,
+                obs=self._obs,
             )
             handled = await handle_group_command(cmd, parts, ctx, _reply_admin)
             if handled:
@@ -779,7 +890,9 @@ class NapCatAdapter(BasePlatformAdapter):
             text = text or f"[媒体消息: {failed_types} 下载失败]"
             logger.warning(
                 "[%s] All media downloads failed for msg %s (types: %s) — falling back to text",
-                self._log_tag, message_id, failed_types,
+                self._log_tag,
+                message_id,
+                failed_types,
             )
         else:
             logger.debug("[%s] Empty message %s — skipping", self._log_tag, message_id)
@@ -827,9 +940,10 @@ class NapCatAdapter(BasePlatformAdapter):
             return
         try:
             await api_call(
-                self._http_client, self._http_url,
+                self._http_client,
+                self._http_url,
                 API_SET_MSG_EMOJI_LIKE,
-                data={"message_id": int(event.message_id), "emoji_id": "32", "set": True},
+                data={"message_id": int(event.message_id), "emoji_id": EMOJI_THINKING, "set": True},
                 token=self._token,
             )
         except Exception as exc:
@@ -842,9 +956,10 @@ class NapCatAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             return  # Leave the thinking emoji in place
         try:
-            emoji_id = "76" if outcome == ProcessingOutcome.SUCCESS else "326"
+            emoji_id = EMOJI_SUCCESS if outcome == ProcessingOutcome.SUCCESS else EMOJI_FAILURE
             await api_call(
-                self._http_client, self._http_url,
+                self._http_client,
+                self._http_url,
                 API_SET_MSG_EMOJI_LIKE,
                 data={"message_id": int(event.message_id), "emoji_id": emoji_id, "set": True},
                 token=self._token,
@@ -853,26 +968,25 @@ class NapCatAdapter(BasePlatformAdapter):
             logger.debug("[%s] Processing-complete reaction failed: %s", self._log_tag, exc)
 
     def _dedup_check(self, message_id: str) -> bool:
-        """Return True if *message_id* has not been seen recently."""
+        """Return True if *message_id* has not been seen recently.
+
+        Uses an OrderedDict for O(1) insertion-order eviction instead of
+        rebuilding the entire dict on every overflow.
+        """
         if not message_id:
             return True  # no ID — can't dedup
-        now = time.monotonic()
-
-        # Evict stale entries
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {
-                k: v for k, v in self._seen_messages.items() if v > cutoff
-            }
-
         if message_id in self._seen_messages:
             logger.debug("[%s] Duplicate message %s — skipping", self._log_tag, message_id)
+            self._obs.metrics.dedup_skipped += 1
             return False
 
-        self._seen_messages[message_id] = now
+        self._seen_messages[message_id] = time.monotonic()
+        # Evict oldest entries when over capacity (O(1) pop from front)
+        while len(self._seen_messages) > DEDUP_MAX_SIZE:
+            self._seen_messages.popitem(last=False)
         return True
 
-    async def _cache_local_file(self, path: str, ext: str = "") -> Optional[str]:
+    async def _cache_local_file(self, path: str, ext: str = "") -> str | None:
         """Copy a local file into the Hermes cache directory.
 
         Used when NapCat has already downloaded the media to a local path
@@ -911,7 +1025,7 @@ class NapCatAdapter(BasePlatformAdapter):
             logger.warning("[%s] Failed to cache local file %s: %s", self._log_tag, path, exc)
             return None
 
-    async def _download_to_cache(self, url: str, ext: str = "") -> Optional[str]:
+    async def _download_to_cache(self, url: str, ext: str = "") -> str | None:
         """Download a file from *url* to the cache directory.
 
         Returns the cached file path, or ``None`` on failure.
@@ -953,18 +1067,62 @@ class NapCatAdapter(BasePlatformAdapter):
         """Return True if reply_to_mode allows quoting received messages."""
         return self._reply_to_mode != "off"
 
+    def _maybe_wrap_reply(
+        self,
+        segments: List[Dict[str, Any]],
+        reply_to: str | None,
+    ) -> List[Dict[str, Any]]:
+        """Prepend a reply segment when reply mode is active and *reply_to* is set.
+
+        Args:
+            segments: The outgoing message segment list to potentially wrap.
+            reply_to: The message ID to quote, or ``None`` to skip.
+
+        Returns:
+            The original *segments* list prepended with a ``reply`` segment
+            when ``NAPCAT_REPLY_MODE != "off"`` and *reply_to* is non-empty;
+            otherwise the original list unchanged.
+        """
+        if reply_to and self._should_reply():
+            return build_reply_message(reply_to, segments)
+        return segments
+
     def format_message(self, content: str) -> str:
-        """Strip markdown formatting for plain-text QQ delivery."""
+        """Strip markdown formatting before sending to QQ.
+
+        QQ renders plain text only; markdown syntax (headings, bold, code
+        fences, etc.) would appear as literal characters.  This method
+        delegates to :func:`gateway.platforms.helpers.strip_markdown`.
+        """
         return strip_markdown(content)
 
     async def send(
         self,
         chat_id: str,
         content: str,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a text message, splitting into chunks if needed."""
+        """Send a plain-text message, splitting it into chunks when necessary.
+
+        Markdown is stripped before sending (see :meth:`format_message`).
+        Messages longer than :attr:`MAX_MESSAGE_LENGTH` are split and sent
+        sequentially with a :data:`CHUNK_SEND_DELAY`-second delay between
+        chunks to avoid hitting NapCat's rate limit.  Only the first chunk
+        carries the reply quote when ``NAPCAT_REPLY_MODE`` is ``"first"``
+        or ``"all"``.
+
+        Args:
+            chat_id: Target chat — a QQ number (private chat) or group number.
+            content: The message body.  Markdown will be stripped.
+            reply_to: Optional message ID to quote (honours ``NAPCAT_REPLY_MODE``).
+            metadata: Opaque dict forwarded from the Hermes gateway (unused).
+
+        Returns:
+            :class:`SendResult` with ``success=True`` and the NapCat
+            ``message_id`` on success, or ``success=False`` with an error
+            description on failure.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
@@ -974,38 +1132,48 @@ class NapCatAdapter(BasePlatformAdapter):
 
         if len(chunks) == 1:
             segments = build_text_message(formatted)
-            if reply_to and self._should_reply():
-                segments = build_reply_message(reply_to, segments)
+            segments = self._maybe_wrap_reply(segments, reply_to)
             return await self._send_segments(chat_id, segments, metadata)
 
         # Send chunks sequentially; only the first chunk gets the reply
-        last_result: Optional[SendResult] = None
+        last_result: SendResult | None = None
         for i, chunk in enumerate(chunks):
             segments = build_text_message(chunk)
-            if reply_to and self._should_reply() and i == 0:
-                segments = build_reply_message(reply_to, segments)
+            if i == 0:
+                segments = self._maybe_wrap_reply(segments, reply_to)
             last_result = await self._send_segments(chat_id, segments, metadata)
             if last_result and not last_result.success:
                 break
             if i < len(chunks) - 1:
-                await asyncio.sleep(0.3)  # Rate-limit between chunks
+                await asyncio.sleep(CHUNK_SEND_DELAY)  # Rate-limit between chunks
         return last_result or SendResult(success=False, error="No chunks sent")
 
     async def send_image(
         self,
         chat_id: str,
         image_url: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send an image with optional caption."""
+        """Send an image with an optional text caption.
+
+        Args:
+            chat_id: Target chat (QQ number or group number).
+            image_url: HTTP(S) URL or ``file:///`` URI of the image.
+                NapCat will download the image when a URL is supplied.
+            caption: Optional text appended after the image segment.
+            reply_to: Optional message ID to quote.
+            metadata: Opaque gateway metadata (unused).
+
+        Returns:
+            :class:`SendResult` describing success or failure.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
         segments = build_image_message(image_url, caption)
-        if reply_to and self._should_reply():
-            segments = build_reply_message(reply_to, segments)
+        segments = self._maybe_wrap_reply(segments, reply_to)
 
         return await self._send_segments(chat_id, segments, metadata)
 
@@ -1013,11 +1181,16 @@ class NapCatAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         image_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a local image file."""
+        """Send a local image file by converting its path to a ``file:///`` URI.
+
+        Delegates to :meth:`send_image` after URI conversion.  The path is
+        URL-encoded so spaces and special characters are handled correctly on
+        all platforms.
+        """
         file_uri = _local_file_uri(image_path)
         return await self.send_image(chat_id, file_uri, caption, reply_to, metadata)
 
@@ -1025,18 +1198,32 @@ class NapCatAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         audio_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a voice / audio message."""
+        """Send a voice / audio message from a local file.
+
+        The file is converted to a ``file:///`` URI and sent as an OneBot 11
+        ``record`` segment.  NapCat accepts common audio formats (OGG, MP3,
+        WAV, SILK, AMR, M4A).
+
+        Args:
+            chat_id: Target chat (QQ number or group number).
+            audio_path: Absolute local path to the audio file.
+            caption: Unused for voice messages; reserved for API compatibility.
+            reply_to: Optional message ID to quote.
+            metadata: Opaque gateway metadata (unused).
+
+        Returns:
+            :class:`SendResult` describing success or failure.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
         file_uri = _local_file_uri(audio_path)
         segments = build_voice_message(file_uri)
-        if reply_to and self._should_reply():
-            segments = build_reply_message(reply_to, segments)
+        segments = self._maybe_wrap_reply(segments, reply_to)
 
         return await self._send_segments(chat_id, segments, metadata)
 
@@ -1044,18 +1231,28 @@ class NapCatAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         video_path: str,
-        caption: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        caption: str | None = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a video message."""
+        """Send a video message from a local file.
+
+        Args:
+            chat_id: Target chat (QQ number or group number).
+            video_path: Absolute local path to the video file (MP4, AVI, MKV, WebM).
+            caption: Optional text appended after the video segment.
+            reply_to: Optional message ID to quote.
+            metadata: Opaque gateway metadata (unused).
+
+        Returns:
+            :class:`SendResult` describing success or failure.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
         file_uri = _local_file_uri(video_path)
         segments = build_video_message(file_uri, caption)
-        if reply_to and self._should_reply():
-            segments = build_reply_message(reply_to, segments)
+        segments = self._maybe_wrap_reply(segments, reply_to)
 
         return await self._send_segments(chat_id, segments, metadata)
 
@@ -1063,20 +1260,32 @@ class NapCatAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        caption: str | None = None,
+        file_name: str | None = None,
+        reply_to: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a file / document."""
+        """Send an arbitrary file as a document / attachment.
+
+        Args:
+            chat_id: Target chat (QQ number or group number).
+            file_path: Absolute local path to the file to send.
+            caption: Optional text appended after the file segment.
+            file_name: Display name for the file.  Defaults to
+                ``os.path.basename(file_path)``.
+            reply_to: Optional message ID to quote.
+            metadata: Opaque gateway metadata (unused).
+
+        Returns:
+            :class:`SendResult` describing success or failure.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
 
         file_uri = _local_file_uri(file_path)
         name = file_name or os.path.basename(file_path)
         segments = build_document_message(file_uri, name, caption)
-        if reply_to and self._should_reply():
-            segments = build_reply_message(reply_to, segments)
+        segments = self._maybe_wrap_reply(segments, reply_to)
 
         return await self._send_segments(chat_id, segments, metadata)
 
@@ -1109,11 +1318,23 @@ class NapCatAdapter(BasePlatformAdapter):
         self,
         chat_id: str,
         segments: List[Dict[str, Any]],
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> SendResult:
-        """Send a segment array to the given chat via the HTTP API."""
+        """Send a segment array to the given chat via the HTTP API.
+
+        Guards outbound calls with the circuit breaker.  When the breaker is
+        OPEN the call is fast-failed immediately without hitting the network.
+        """
         if not self._http_client:
             return SendResult(success=False, error="Not connected")
+
+        # Circuit breaker fast-fail
+        if not self._obs.circuit.allow_request():
+            logger.warning(
+                "[%s] Circuit OPEN — send fast-failed for chat %s", self._log_tag, chat_id
+            )
+            self._obs.metrics.record_send_fail()
+            return SendResult(success=False, error="circuit open", retryable=True)
 
         # Determine message type from tracked chat type
         msg_type = self._chat_type_map.get(chat_id, MSG_TYPE_PRIVATE)
@@ -1129,6 +1350,7 @@ class NapCatAdapter(BasePlatformAdapter):
             payload["message_type"] = MSG_TYPE_PRIVATE
             payload["user_id"] = int(chat_id)
 
+        _t0 = time.monotonic()
         try:
             resp = await api_call(
                 self._http_client,
@@ -1137,15 +1359,23 @@ class NapCatAdapter(BasePlatformAdapter):
                 data=payload,
                 token=self._token,
             )
+            send_ms = (time.monotonic() - _t0) * 1000
+            self._obs.metrics.record_send_latency(send_ms)
+            self._obs.circuit.record_success()
             mid = resp.get("message_id")
+            self._obs.metrics.record_send_ok()
             return SendResult(
                 success=True,
                 message_id=str(mid) if mid is not None else None,
             )
         except OneBotAPIError as exc:
+            self._obs.circuit.record_failure()
+            self._obs.metrics.record_send_fail()
             logger.error("[%s] Send failed: %s", self._log_tag, exc)
             return SendResult(success=False, error=str(exc))
         except Exception as exc:
+            self._obs.circuit.record_failure()
+            self._obs.metrics.record_send_fail()
             logger.error("[%s] Send failed: %s", self._log_tag, exc, exc_info=True)
             return SendResult(success=False, error=str(exc), retryable=True)
 
