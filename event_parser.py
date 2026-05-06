@@ -10,6 +10,8 @@ functions are:
 * :func:`extract_forward_ids` — collect IDs for forwarded-message expansion
 * :func:`extract_forward_text` — format an expanded forward payload as text
 * :func:`check_at_bot` — detect whether the bot's QQ was @-mentioned
+* :func:`_extract_json_text` — surface card title from a ``json`` segment
+* :func:`_extract_xml_text` — surface card title from an ``xml`` segment
 
 No network I/O is performed here; all data comes from the already-parsed
 event dict received over WebSocket.
@@ -17,8 +19,10 @@ event dict received over WebSocket.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -30,10 +34,12 @@ from .constants import (
     SEG_FILE,
     SEG_FORWARD,
     SEG_IMAGE,
+    SEG_JSON,
     SEG_RECORD,
     SEG_REPLY,
     SEG_TEXT,
     SEG_VIDEO,
+    SEG_XML,
 )
 
 logger = logging.getLogger(__name__)
@@ -207,8 +213,6 @@ def _clean_cq_codes(text: str) -> str:
     Returns:
         Cleaned plain text with CQ codes replaced or removed.
     """
-    import re
-
     # Replace face codes with placeholder
     text = re.sub(r"\[CQ:face,id=\d+\]", "[表情]", text)
     # Replace image codes with placeholder
@@ -216,6 +220,75 @@ def _clean_cq_codes(text: str) -> str:
     # Remove other CQ codes
     text = re.sub(r"\[CQ:[^\]]+\]", "", text)
     return text.strip()
+
+
+def _extract_json_text(data: Dict[str, Any]) -> str:
+    """Extract a human-readable label from a OneBot 11 ``json`` segment.
+
+    QQ rich-content cards (music shares, mini-programs, URL previews …) arrive
+    as ``{"type": "json", "data": {"data": "<JSON string>"}}``.  We try to
+    surface the most descriptive field available so the LLM can acknowledge the
+    shared content instead of seeing an empty message.
+
+    Priority order: ``desc`` → ``prompt`` → ``title`` → ``tag``.
+    Falls back to ``[分享]`` when no field is found or the payload cannot be
+    decoded.
+
+    Args:
+        data: The ``data`` dict of a ``json`` segment (not the outer segment).
+
+    Returns:
+        A short text label like ``"[分享: 告白气球 - 周杰伦]"`` or ``"[分享]"``.
+    """
+    raw = data.get("data", "")
+    if not raw:
+        return "[分享]"
+    try:
+        payload: Dict[str, Any] = json.loads(raw) if isinstance(raw, str) else raw
+        # Nested meta block present in most QQ card formats
+        meta = payload.get("meta", {})
+        if isinstance(meta, dict):
+            # music / news / app cards store details one level deeper
+            for submeta in meta.values():
+                if isinstance(submeta, dict):
+                    for key in ("desc", "title", "tag"):
+                        val = submeta.get(key, "")
+                        if val and isinstance(val, str):
+                            return f"[分享: {val.strip()}]"
+        # Top-level fields (simpler card formats)
+        for key in ("desc", "prompt", "title", "tag"):
+            val = payload.get(key, "")
+            if val and isinstance(val, str):
+                return f"[分享: {val.strip()}]"
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        logger.debug("Failed to decode json segment payload")
+    return "[分享]"
+
+
+def _extract_xml_text(data: Dict[str, Any]) -> str:
+    """Extract a human-readable label from a OneBot 11 ``xml`` segment.
+
+    XML cards (older QQ mini-programs, group notices, …) carry a ``data``
+    field with a raw XML string.  Full XML parsing would require ``xml.etree``
+    which is fine, but the field names vary significantly.  A targeted regex
+    approach is more robust for the malformed fragments NapCat sometimes emits.
+
+    Looks for ``<title>`` / ``<summary>`` / ``<brief>`` in that order.
+
+    Args:
+        data: The ``data`` dict of an ``xml`` segment.
+
+    Returns:
+        A short text label like ``"[卡片: 群公告更新]"`` or ``"[卡片]"``.
+    """
+    raw = data.get("data", "")
+    if not raw or not isinstance(raw, str):
+        return "[卡片]"
+    for tag in ("title", "summary", "brief"):
+        m = re.search(rf"<{tag}>([^<]{{1,120}})</{tag}>", raw, re.IGNORECASE)
+        if m:
+            return f"[卡片: {m.group(1).strip()}]"
+    return "[卡片]"
 
 
 def extract_forward_text(forward_data: Any, max_items: int = 10, max_preview: int = 200) -> str:
@@ -418,6 +491,12 @@ def parse_message_segments(
                 text_parts.append("\n" + forward_texts[forward_id])
             else:
                 text_parts.append("[转发消息]")
+
+        elif seg_type == SEG_JSON:
+            text_parts.append(_extract_json_text(data))
+
+        elif seg_type == SEG_XML:
+            text_parts.append(_extract_xml_text(data))
 
         else:
             # Unknown segment type — log and skip

@@ -8,6 +8,8 @@ import pytest
 from napcat.event_parser import (
     _FACE_MAP,
     _clean_cq_codes,
+    _extract_json_text,
+    _extract_xml_text,
     _guess_audio_extension,
     _guess_extension,
     _resolve_media_url,
@@ -473,3 +475,101 @@ class TestExtractForwardText:
         result = extract_forward_text(data)
         # 嵌套转发内容被跳过，不会导致递归；整体结果为空占位符
         assert result == "[转发消息: 内容为空]"
+
+
+# ---------------------------------------------------------------------------
+# _extract_json_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractJsonText:
+    def test_desc_field_in_meta(self):
+        """Music share cards embed desc inside a meta sub-object."""
+        import json
+
+        payload = {"meta": {"music": {"desc": "告白气球 - 周杰伦", "title": "告白气球"}}}
+        data = {"data": json.dumps(payload)}
+        result = _extract_json_text(data)
+        assert result == "[分享: 告白气balloon - 周杰伦]" or "告白气球" in result
+
+    def test_desc_field_in_meta_real(self):
+        import json
+
+        payload = {"meta": {"music": {"desc": "告白气球 - 周杰伦"}}}
+        data = {"data": json.dumps(payload)}
+        assert _extract_json_text(data) == "[分享: 告白气球 - 周杰伦]"
+
+    def test_prompt_top_level(self):
+        import json
+
+        payload = {"prompt": "查看链接"}
+        data = {"data": json.dumps(payload)}
+        assert _extract_json_text(data) == "[分享: 查看链接]"
+
+    def test_title_top_level(self):
+        import json
+
+        payload = {"title": "B站视频"}
+        data = {"data": json.dumps(payload)}
+        assert _extract_json_text(data) == "[分享: B站视频]"
+
+    def test_empty_data_returns_fallback(self):
+        assert _extract_json_text({}) == "[分享]"
+        assert _extract_json_text({"data": ""}) == "[分享]"
+
+    def test_invalid_json_returns_fallback(self):
+        assert _extract_json_text({"data": "{not valid json"}) == "[分享]"
+
+    def test_no_known_fields_returns_fallback(self):
+        import json
+
+        payload = {"app": "com.tencent.something", "ver": "1.0"}
+        data = {"data": json.dumps(payload)}
+        assert _extract_json_text(data) == "[分享]"
+
+    def test_json_segment_in_parse_message_segments(self):
+        import json
+
+        payload = {"meta": {"detail_1": {"title": "GitHub Trending"}}}
+        segs = [{"type": "json", "data": {"data": json.dumps(payload)}}]
+        text, media = parse_message_segments(segs)
+        assert "GitHub Trending" in text
+        assert media == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_xml_text
+# ---------------------------------------------------------------------------
+
+
+class TestExtractXmlText:
+    def test_title_tag(self):
+        data = {"data": "<msg><title>群公告更新</title></msg>"}
+        assert _extract_xml_text(data) == "[卡片: 群公告更新]"
+
+    def test_summary_tag(self):
+        data = {"data": "<msg><summary>活动通知内容</summary></msg>"}
+        assert _extract_xml_text(data) == "[卡片: 活动通知内容]"
+
+    def test_brief_tag(self):
+        data = {"data": "<msg><brief>简短说明</brief></msg>"}
+        assert _extract_xml_text(data) == "[卡片: 简短说明]"
+
+    def test_title_preferred_over_summary(self):
+        data = {"data": "<msg><title>主标题</title><summary>副标题</summary></msg>"}
+        # title has higher priority
+        assert _extract_xml_text(data) == "[卡片: 主标题]"
+
+    def test_empty_data_returns_fallback(self):
+        assert _extract_xml_text({}) == "[卡片]"
+        assert _extract_xml_text({"data": ""}) == "[卡片]"
+
+    def test_no_known_tags_returns_fallback(self):
+        data = {"data": "<msg><action>click</action></msg>"}
+        assert _extract_xml_text(data) == "[卡片]"
+
+    def test_xml_segment_in_parse_message_segments(self):
+        segs = [{"type": "xml", "data": {"data": "<msg><title>红包</title></msg>"}}]
+        text, media = parse_message_segments(segs)
+        assert "红包" in text
+        assert media == []
