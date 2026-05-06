@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional
 
 from .constants import (
     API_SET_GROUP_BAN,
@@ -192,7 +192,7 @@ async def handle_group_command(
     cmd: str,
     parts: List[str],
     ctx: AdminCmdContext,
-    send_fn,
+    send_fn: Callable[[str], Awaitable[None]],
 ) -> bool:
     """Dispatch an admin command.
 

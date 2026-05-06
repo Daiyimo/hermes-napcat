@@ -1289,7 +1289,7 @@ class NapCatAdapter(BasePlatformAdapter):
 
         return await self._send_segments(chat_id, segments, metadata)
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Dict[str, Any] | None = None) -> None:
         """No standard typing indicator in OneBot 11 — no-op."""
         pass
 

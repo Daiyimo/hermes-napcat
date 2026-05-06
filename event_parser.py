@@ -392,7 +392,6 @@ def parse_message_segments(
     """
     text_parts: List[str] = []
     media_list: List[Dict[str, Any]] = []
-    reply_id: str | None = None
 
     for seg in segments:
         seg_type = seg.get("type", "")
@@ -473,7 +472,7 @@ def parse_message_segments(
                 text_parts.append(f"@{qq}")
 
         elif seg_type == SEG_REPLY:
-            reply_id = str(data.get("id", ""))  # noqa: F841 — reply handled by extract_reply_id()
+            pass  # reply ID is extracted separately by extract_reply_id()
 
         elif seg_type == SEG_FACE:
             face_id = data.get("id")
