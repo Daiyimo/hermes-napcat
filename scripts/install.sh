@@ -786,20 +786,30 @@ if os.path.isfile(prompt_builder_py):
 else:
     print("  [3d] 跳过：未找到 prompt_builder.py（可选补丁）")
 
-# ── 3e: Patch gateway/run.py (core GatewayRunner) ──
-# Adds NAPCAT support to GatewayRunner (enum, adapter creation, auth maps)
+# ── 3e: Patch gateway/config.py (Platform enum) ──
+# The Platform enum lives in config.py, not run.py.
+config_py = os.path.join(hermes_home, 'gateway', 'config.py')
+if os.path.isfile(config_py):
+    content = open(config_py, encoding='utf-8').read()
+    if 'NAPCAT = "napcat"' not in content:
+        content = content.replace('    QQBOT = "qqbot"', '    QQBOT = "qqbot"\n    NAPCAT = "napcat"')
+        open(config_py, 'w', encoding='utf-8').write(content)
+        print("  [3e] config.py Platform 枚举添加 NAPCAT")
+        any_patched = True
+    else:
+        print("  [3e] config.py 已有 NAPCAT 枚举，跳过")
+else:
+    print("  [3e] 跳过：未找到 gateway/config.py")
+
+# ── 3f: Patch gateway/run.py (core GatewayRunner) ──
+# Adds NAPCAT support to GatewayRunner (adapter creation, auth maps, update platforms)
 run_py = os.path.join(hermes_home, 'gateway', 'run.py')
 if os.path.isfile(run_py):
     content = open(run_py, encoding='utf-8').read()
     patched = False
 
-    # 3e-1: Add NAPCAT to Platform enum
-    if 'NAPCAT = "napcat"' not in content:
-        content = content.replace('    QQBOT = "qqbot"', '    QQBOT = "qqbot"\n    NAPCAT = "napcat"')
-        patched = True
-        print("  [3e-1] Platform 枚举添加 NAPCAT")
 
-    # 3e-2: Add NAPCAT adapter branch in _create_adapter
+    # 3f-1: Add NAPCAT adapter branch in _create_adapter
     if 'Platform.NAPCAT:' not in content:
         napcat_adapter_code = '''
         elif platform == Platform.NAPCAT:
@@ -814,9 +824,9 @@ if os.path.isfile(run_py):
         if qqbot_anchor in content:
             content = content.replace(qqbot_anchor, qqbot_anchor + napcat_adapter_code, 1)
             patched = True
-            print("  [3e-2] _create_adapter 添加 NAPCAT 分支")
+            print("  [3f-1] _create_adapter 添加 NAPCAT 分支")
 
-    # 3e-3: Add NAPCAT to _is_user_authorized maps
+    # 3f-2: Add NAPCAT to _is_user_authorized maps
     if 'Platform.NAPCAT: "NAPCAT_ALLOWED_USERS"' not in content:
         content = content.replace(
             '            Platform.QQBOT: "QQ_ALLOWED_USERS",',
@@ -827,33 +837,33 @@ if os.path.isfile(run_py):
             '            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",\n            Platform.NAPCAT: "NAPCAT_ALLOW_ALL_USERS",'
         )
         patched = True
-        print("  [3e-3] _is_user_authorized 添加 NAPCAT 权限映射")
+        print("  [3f-2] _is_user_authorized 添加 NAPCAT 权限映射")
 
-    # 3e-4: Add NAPCAT to _UPDATE_ALLOWED_PLATFORMS
+    # 3f-3: Add NAPCAT to _UPDATE_ALLOWED_PLATFORMS
     if 'Platform.NAPCAT,' not in content:
         content = content.replace(
-            '        Platform.QQBOT, Platform.LOCAL,',
-            '        Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,'
+            'Platform.QQBOT, Platform.LOCAL,',
+            'Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,'
         )
         patched = True
-        print("  [3e-4] _UPDATE_ALLOWED_PLATFORMS 添加 NAPCAT")
+        print("  [3f-3] _UPDATE_ALLOWED_PLATFORMS 添加 NAPCAT")
 
     if patched:
         open(run_py, 'w', encoding='utf-8').write(content)
-        print("  [3e] run.py 修补完成")
+        print("  [3f] run.py 修补完成")
     else:
-        print("  [3e] run.py 无需修补")
+        print("  [3f] run.py 无需修补")
 else:
-    print("  [3e] 跳过：未找到 run.py")
+    print("  [3f] 跳过：未找到 run.py")
 
-# ── 3f: Patch session.py (Platform.NAPCAT branch comment) ──
+# ── 3g: Patch session.py (Platform.NAPCAT branch comment) ──
 # Adds a runtime context branch so session logging / toolset selection
 # knows this is a QQ conversation, not a CLI or web session.
 session_py = os.path.join(hermes_home, 'gateway', 'session.py')
 if os.path.isfile(session_py):
     content = open(session_py, encoding='utf-8').read()
     if 'NAPCAT' in content or 'napcat' in content:
-        print("  [3e] session.py 已有 napcat 条目，跳过")
+        print("  [3g] session.py 已有 napcat 条目，跳过")
     else:
         napcat_branch = '            elif platform == Platform.NAPCAT:\n                ctx["platform_type"] = "qq_chat"\n'
         # Insert after QQBOT branch if present
@@ -864,13 +874,13 @@ if os.path.isfile(session_py):
             if anchor in content:
                 content = content.replace(anchor, anchor + napcat_branch, 1)
                 open(session_py, 'w', encoding='utf-8').write(content)
-                print("  [3e] session.py Platform.NAPCAT 分支插入成功")
+                print("  [3g] session.py Platform.NAPCAT 分支插入成功")
                 any_patched = True
                 break
         else:
-            print("  [3e] 跳过：未找到 QQBOT 锚点，session.py 结构不匹配（可选补丁）")
+            print("  [3g] 跳过：未找到 QQBOT 锚点，session.py 结构不匹配（可选补丁）")
 else:
-    print("  [3e] 跳过：未找到 session.py（可选补丁）")
+    print("  [3g] 跳过：未找到 session.py（可选补丁）")
 
 # === 最终验证 ===
 errors = []
@@ -878,7 +888,8 @@ for check_file, patterns in [
     (platforms_py, ['"napcat"']),
     (send_msg_py, ['"napcat": Platform.NAPCAT', 'def _send_napcat(', 'elif platform == Platform.NAPCAT:']),
     (config_yaml, ['napcat:', 'hermes-napcat']),
-    (run_py, ['NAPCAT = "napcat"', 'Platform.NAPCAT:', 'NAPCAT_ALLOWED_USERS']),
+    (config_py, ['NAPCAT = "napcat"']),
+    (run_py, ['Platform.NAPCAT:', 'NAPCAT_ALLOWED_USERS']),
 ]:
     if check_file and os.path.isfile(check_file):
         content = open(check_file, encoding='utf-8').read()
