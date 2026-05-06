@@ -10,7 +10,9 @@ QQ 消息平台适配器，通过 [NapCat](https://napneko.github.io) 的 OneBot
 | websockets | >= 14.0 |
 | httpx | >= 0.27.0 |
 
-> 如果 Hermes Agent 已通过 `.[all]` 安装，`websockets` 和 `httpx` 已包含在内。手动安装适配器时可用 `pip install -r requirements.txt` 补全依赖。
+> 如果 Hermes Agent 已通过 `.[all]` 安装，`websockets` 和 `httpx` 已包含在内。手动安装适配器时可用 `pip install websockets httpx` 补全依赖。
+
+📄 [CHANGELOG](CHANGELOG.md) · [贡献指南](CONTRIBUTING.md)
 
 ---
 
@@ -474,6 +476,43 @@ hermes status           # 查看 NapCat 平台配置状态
 hermes status --deep    # 深度检查（含端口连通性）
 hermes doctor           # 运行完整诊断
 ```
+
+---
+
+## 开发与测试
+
+### 运行单元测试
+
+```bash
+# 安装测试依赖
+pip install pytest pytest-asyncio
+
+# 从 tests/ 目录运行（pytest.ini 在此）
+cd tests
+python -m pytest . -v
+# 预期：99 passed, 2 skipped
+```
+
+> 测试不依赖真实 NapCat 或 Hermes Gateway，所有网络依赖均通过 `tests/conftest.py` 中的 stub 隔离。
+
+### 带覆盖率报告
+
+```bash
+pip install pytest-cov
+cd tests
+python -m pytest . -v --cov=.. --cov-report=term-missing
+```
+
+### 测试覆盖范围
+
+| 测试文件 | 覆盖模块 | 测试数 |
+|---------|---------|--------|
+| `test_utils.py` | `utils.py` | 14 |
+| `test_message_builder.py` | `message_builder.py` | 22 |
+| `test_event_parser.py` | `event_parser.py` | 27 |
+| `test_group_commands.py` | `group_commands.py` | 38 |
+
+详细开发指南（代码规范、PR 流程、新增功能方法）见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
