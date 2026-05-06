@@ -34,8 +34,12 @@ ENV/
 # Environment variables & secrets  ← NEVER commit these
 # -----------------------------------------------------------------------------
 .env
-.env.*
-!.env.example          # keep the example template
+.env.local
+.env.production
+.env.staging
+.env.development
+.env.*.local
+# .env.example is intentionally tracked — it is a safe template with no secrets
 *.secret
 secrets.yaml
 secrets.json
