@@ -93,6 +93,7 @@ _load("utils.py", "utils")
 _load("message_builder.py", "message_builder")
 _load("event_parser.py", "event_parser")
 _load("group_commands.py", "group_commands")
+_load("observability.py", "observability")
 
 # ---------------------------------------------------------------------------
 # 3. Stub napcat.adapter so that __init__.py's relative import succeeds
@@ -123,6 +124,7 @@ for _short in (
     "message_builder",
     "event_parser",
     "group_commands",
+    "observability",
     "adapter",
 ):
     _full = f"{_PKG}.{_short}"
