@@ -842,8 +842,8 @@ if os.path.isfile(run_py):
     # 3f-3: Add NAPCAT to _UPDATE_ALLOWED_PLATFORMS
     if 'Platform.NAPCAT,' not in content:
         content = content.replace(
-            'Platform.QQBOT, Platform.LOCAL,',
-            'Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,'
+            'Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,',
+            'Platform.BLUEBUBBLES, Platform.QQBOT, Platform.NAPCAT, Platform.LOCAL,'
         )
         patched = True
         print("  [3f-3] _UPDATE_ALLOWED_PLATFORMS 添加 NAPCAT")
