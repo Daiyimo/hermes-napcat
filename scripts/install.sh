@@ -183,21 +183,26 @@ fi
 # ── Step 2: Patch gateway.py ────────────────────────────────────
 info "Step 2/3  修补 hermes_cli/gateway.py（添加 NapCat 配置向导）"
 
-if grep -q '"key": "napcat"' "$GATEWAY_PY"; then
-    success "gateway.py 已包含 NapCat 条目，跳过"
-else
-    cp "$GATEWAY_PY" "${GATEWAY_PY}.bak"
-    info "  已备份 → ${GATEWAY_PY}.bak"
+# Always take a backup before patching (idempotent: overwrites previous backup)
+cp "$GATEWAY_PY" "${GATEWAY_PY}.bak"
+info "  已备份 → ${GATEWAY_PY}.bak"
 
-    if "$PYTHON_BIN" - "$GATEWAY_PY" "$NAPCAT_DIR" <<'PYEOF'
+"$PYTHON_BIN" - "$GATEWAY_PY" "$NAPCAT_DIR" <<'PYEOF'
 import sys, os, re
 
 gateway_py = sys.argv[1]
 napcat_dir = sys.argv[2]
 
 content = open(gateway_py, encoding='utf-8').read()
+original = content  # keep for dirty-check
 
-# ── Insert 1: napcat entry into _PLATFORMS list (before yuanbao) ──
+# ════════════════════════════════════════════════════════════════
+# Insert 1: napcat entry into _PLATFORMS list
+#   Idempotency: check only for this specific block, NOT a broad
+#   '"key": "napcat"' grep that would skip all three sub-patches.
+# ════════════════════════════════════════════════════════════════
+NAPCAT_PLATFORMS_MARKER = '"key": "napcat"'
+
 napcat_platform_entry = r'''    {
         "key": "napcat",
         "label": "NapCat (QQ)",
@@ -216,8 +221,8 @@ napcat_platform_entry = r'''    {
              "help": "NapCat HTTP Server 地址，例如 http://127.0.0.1:3000"},
             {"name": "NAPCAT_WS_URL", "prompt": "NapCat WebSocket 地址", "password": False,
              "help": "正向填 WS Server 地址(如 ws://127.0.0.1:3001)，反向填适配器监听地址(如 ws://127.0.0.1:3002)"},
-	            {"name": "NAPCAT_WS_MODE", "prompt": "WS 模式 (forward=适配器连NapCat, reverse=NapCat连适配器)", "password": False,
-	             "help": "forward 对应 websocketServers(默认), reverse 对应 websocketClients(反向代理)"},
+            {"name": "NAPCAT_WS_MODE", "prompt": "WS 模式 (forward=适配器连NapCat, reverse=NapCat连适配器)", "password": False,
+             "help": "forward 对应 websocketServers(默认), reverse 对应 websocketClients(反向代理)"},
             {"name": "NAPCAT_TOKEN", "prompt": "访问令牌（可选，留空跳过）", "password": True,
              "help": "与 NapCat Server 配置中 token 字段保持一致，未配置 token 则直接回车跳过"},
             {"name": "NAPCAT_ALLOWED_USERS", "prompt": "允许私聊的 QQ 号（逗号分隔，留空则不限制）", "password": False,
@@ -233,21 +238,37 @@ napcat_platform_entry = r'''    {
     },
 '''
 
-# Find yuanbao entry, insert before it
-anchor1 = '    {\n        "key": "yuanbao",'
-if anchor1 in content:
-    content = content.replace(anchor1, napcat_platform_entry + anchor1, 1)
-    print("  [1/3] _PLATFORMS 条目插入成功")
+if NAPCAT_PLATFORMS_MARKER in content:
+    print("  [1/3] _PLATFORMS 条目已存在，跳过")
 else:
-    # Fallback: insert before _platform_status function
-    content = re.sub(
-        r'(\n\]\s*\n\s*\ndef _platform_status)',
-        '\n' + napcat_platform_entry + r'\1',
-        content, count=1
-    )
-    print("  [1/3] _PLATFORMS 条目插入成功（兜底方式）")
+    # Preferred anchor: before yuanbao entry
+    anchor1 = '    {\n        "key": "yuanbao",'
+    if anchor1 in content:
+        content = content.replace(anchor1, napcat_platform_entry + anchor1, 1)
+        print("  [1/3] _PLATFORMS 条目插入成功（yuanbao 之前）")
+    else:
+        # Fallback: insert before closing bracket + _platform_status
+        patched = re.sub(
+            r'(\n\]\s*\n\s*\ndef _platform_status)',
+            '\n' + napcat_platform_entry + r'\1',
+            content, count=1
+        )
+        if patched != content:
+            content = patched
+            print("  [1/3] _PLATFORMS 条目插入成功（列表末尾兜底）")
+        else:
+            print("  [1/3] 警告：未找到 _PLATFORMS 插入点，请手动添加 napcat 条目")
 
-# ── Insert 2: _setup_napcat() function ──
+# ════════════════════════════════════════════════════════════════
+# Insert 2: _setup_napcat() function
+#   Idempotency: check for the exact function signature.
+#   Always re-insert when stale (function body may have changed
+#   between install.sh versions — e.g. missing NAPCAT_WS_MODE).
+# ════════════════════════════════════════════════════════════════
+SETUP_FUNC_MARKER = 'def _setup_napcat'
+# Marker for content freshness: if WS_MODE prompt is missing the func is stale
+SETUP_FUNC_FRESH_MARKER = 'NAPCAT_WS_MODE'
+
 setup_napcat_func = '''
 
 def _setup_napcat():
@@ -279,9 +300,9 @@ def _setup_napcat():
     print_success("  已保存 NAPCAT_HTTP_URL")
 
     print()
-    print_info("  NapCat WebSocket 地址
-  正向模式填 WS Server 地址（如 ws://127.0.0.1:3001）
-  反向模式填适配器监听地址（如 ws://127.0.0.1:3002）")
+    print_info("  NapCat WebSocket 地址")
+    print_info("  正向模式填 WS Server 地址（如 ws://127.0.0.1:3001）")
+    print_info("  反向模式填适配器监听地址（如 ws://127.0.0.1:3002）")
     ws_url = prompt("  NapCat WebSocket 地址", password=False)
     if not ws_url:
         print_warning("  已跳过 — 缺少 WebSocket 地址，NapCat 将无法接收消息。")
@@ -360,62 +381,115 @@ def _setup_napcat():
 
 '''
 
-if 'def _setup_napcat' not in content:
+func_exists = SETUP_FUNC_MARKER in content
+func_fresh  = SETUP_FUNC_FRESH_MARKER in content
+
+if func_exists and func_fresh:
+    print("  [2/3] _setup_napcat() 已存在且为最新版，跳过")
+else:
+    if func_exists and not func_fresh:
+        # Remove stale version before re-inserting
+        # Strip from 'def _setup_napcat' to the next 'def ' at column 0
+        content = re.sub(
+            r'\ndef _setup_napcat\(\).*?(?=\ndef |\Z)',
+            '',
+            content,
+            count=1,
+            flags=re.DOTALL,
+        )
+        print("  [2/3] 检测到旧版 _setup_napcat()（缺少 NAPCAT_WS_MODE），已移除准备更新")
+
+    # Insert at preferred anchor, then fallback to append
     if 'def _setup_signal' in content:
         content = content.replace('def _setup_signal', setup_napcat_func + 'def _setup_signal', 1)
-        print("  [2/3] _setup_napcat() 函数插入成功")
+        print("  [2/3] _setup_napcat() 函数插入成功（_setup_signal 之前）")
+    elif 'def _setup_platform' in content:
+        content = content.replace('def _setup_platform', setup_napcat_func + 'def _setup_platform', 1)
+        print("  [2/3] _setup_napcat() 函数插入成功（_setup_platform 之前）")
     else:
         content += setup_napcat_func
         print("  [2/3] _setup_napcat() 函数插入成功（末尾兜底）")
-else:
-    print("  [2/3] _setup_napcat() 已存在，跳过")
 
-# ── Insert 3: routing branch ──
-if '_setup_napcat()' not in content:
-    for route_anchor in [
+# ════════════════════════════════════════════════════════════════
+# Insert 3: routing branch inside the platform dispatch block
+#   Idempotency: check for the napcat dispatch line itself.
+#   Anchors tried in order (most to least specific):
+#     a) after _setup_qqbot() call  — Hermes ≥ 0.11
+#     b) after qqbot key branch     — older layout
+#     c) before _setup_standard_platform / _setup_platform call  — 0.10.x
+#     d) before wecom branch        — any version with wecom
+#     e) append before closing else — last resort
+# ════════════════════════════════════════════════════════════════
+ROUTE_MARKER = 'platform["key"] == "napcat"'
+NAPCAT_ROUTE = '        elif platform["key"] == "napcat":\n            _setup_napcat()\n'
+
+if ROUTE_MARKER in content:
+    print("  [3/3] 路由分支已存在，跳过")
+else:
+    inserted = False
+
+    # Anchor a: after _setup_qqbot()
+    for anchor in [
         '            _setup_qqbot()\n',
         'elif platform["key"] == "qqbot":\n            _setup_qqbot()\n',
     ]:
-        if route_anchor in content:
-            content = content.replace(
-                route_anchor,
-                route_anchor + '        elif platform["key"] == "napcat":\n            _setup_napcat()\n',
-                1
-            )
-            print("  [3/3] 路由分支插入成功")
+        if anchor in content:
+            content = content.replace(anchor, anchor + NAPCAT_ROUTE, 1)
+            print("  [3/3] 路由分支插入成功（qqbot 之后）")
+            inserted = True
             break
-    else:
-        wecom_route = '        elif platform["key"] == "wecom":'
-        if wecom_route in content:
-            content = content.replace(
-                wecom_route,
-                '        elif platform["key"] == "napcat":\n            _setup_napcat()\n' + wecom_route,
-                1
-            )
-            print("  [3/3] 路由分支插入成功（兜底方式）")
-        else:
-            print("  [3/3] 警告：找不到路由插入点，请手动添加")
+
+    # Anchor b: before _setup_standard_platform / _setup_platform — Hermes 0.10.x
+    if not inserted:
+        for anchor in [
+            '            _setup_standard_platform(platform)\n',
+            '            _setup_platform(platform)\n',
+        ]:
+            if anchor in content:
+                content = content.replace(anchor, NAPCAT_ROUTE + anchor, 1)
+                print(f"  [3/3] 路由分支插入成功（{anchor.strip()} 之前，0.10.x 兜底）")
+                inserted = True
+                break
+
+    # Anchor c: before wecom branch
+    if not inserted:
+        wecom_anchor = '        elif platform["key"] == "wecom":'
+        if wecom_anchor in content:
+            content = content.replace(wecom_anchor, NAPCAT_ROUTE + wecom_anchor, 1)
+            print("  [3/3] 路由分支插入成功（wecom 之前）")
+            inserted = True
+
+    # Anchor d: regex — any elif platform["key"] branch
+    if not inserted:
+        m = re.search(r'(\n        elif platform\["key"\] == "[a-z])', content)
+        if m:
+            content = content[:m.start()] + '\n' + NAPCAT_ROUTE + content[m.start():]
+            print("  [3/3] 路由分支插入成功（正则兜底）")
+            inserted = True
+
+    if not inserted:
+        print("  [3/3] 警告：找不到路由插入点，请手动在 platform 分发块中添加 napcat 分支")
+
+# Write back only if changed
+if content != original:
+    open(gateway_py, 'w', encoding='utf-8').write(content)
+    import ast
+    try:
+        ast.parse(content)
+        print("  语法验证通过")
+    except SyntaxError as e:
+        print(f"  语法错误：{e}，正在恢复备份...")
+        import shutil
+        shutil.copy(gateway_py + '.bak', gateway_py)
+        sys.exit(1)
 else:
-    print("  [3/3] 路由分支已存在，跳过")
-
-# Write back and verify syntax
-open(gateway_py, 'w', encoding='utf-8').write(content)
-
-import ast
-try:
-    ast.parse(content)
-    print("  语法验证通过")
-except SyntaxError as e:
-    print(f"  语法错误：{e}，正在恢复备份...")
-    import shutil
-    shutil.copy(gateway_py + '.bak', gateway_py)
-    sys.exit(1)
+    print("  gateway.py 无需修改")
 PYEOF
-    then
-        success "gateway.py 修补完成"
-    else
-        error "修补失败，已自动恢复备份"
-    fi
+
+if [ $? -eq 0 ]; then
+    success "gateway.py 修补完成"
+else
+    error "修补失败，已自动恢复备份"
 fi
 
 # ── Step 3: Patch platform registration points ──────────────────
@@ -626,6 +700,73 @@ if config_yaml:
             print(f"  [3c] 警告：{config_yaml} 中未找到 qqbot 锚点，请手动添加 napcat")
 else:
     print("  [3c] 警告：未找到 config.yaml，请手动添加 napcat 到 platform_toolsets")
+
+# ── 3d: Patch prompt_builder.py (PLATFORM_HINTS) ──
+# Without this, the LLM has no QQ-specific context and may treat
+# incoming messages as CLI tasks instead of conversational replies.
+prompt_builder_py = os.path.join(hermes_home, 'gateway', 'prompt_builder.py')
+if os.path.isfile(prompt_builder_py):
+    content = open(prompt_builder_py, encoding='utf-8').read()
+    if '"napcat"' in content or 'napcat' in content.lower().split('platform_hints')[1][:500] if 'platform_hints' in content.lower() else False:
+        print("  [3d] prompt_builder.py 已有 napcat 条目，跳过")
+    else:
+        napcat_hint = (
+            '    "napcat": (\n'
+            '        "You are a QQ chat assistant. The user is messaging you via QQ (NapCat/OneBot 11). "\n'
+            '        "Reply conversationally. Never call send_message — your reply IS the message sent to QQ."\n'
+            '    ),\n'
+        )
+        # Try inserting after qqbot hint
+        for anchor in ['"qqbot":', '"QQBot":']:
+            if anchor in content:
+                # Find the closing paren+comma of that entry and insert after
+                idx = content.find(anchor)
+                close = content.find('),', idx)
+                if close != -1:
+                    content = content[:close+2] + '\n' + napcat_hint + content[close+2:]
+                    open(prompt_builder_py, 'w', encoding='utf-8').write(content)
+                    print("  [3d] prompt_builder.py PLATFORM_HINTS napcat 条目插入成功")
+                    any_patched = True
+                    break
+        else:
+            # Fallback: append before closing brace of PLATFORM_HINTS dict
+            import re as _re
+            m = _re.search(r'(PLATFORM_HINTS\s*=\s*\{[^}]*)(})', content, _re.DOTALL)
+            if m:
+                content = content[:m.start(2)] + napcat_hint + content[m.start(2):]
+                open(prompt_builder_py, 'w', encoding='utf-8').write(content)
+                print("  [3d] prompt_builder.py PLATFORM_HINTS napcat 条目插入成功（兜底）")
+                any_patched = True
+            else:
+                print("  [3d] 跳过：未找到 PLATFORM_HINTS 字典，prompt_builder.py 结构不匹配")
+else:
+    print("  [3d] 跳过：未找到 prompt_builder.py（可选补丁）")
+
+# ── 3e: Patch session.py (Platform.NAPCAT branch comment) ──
+# Adds a runtime context branch so session logging / toolset selection
+# knows this is a QQ conversation, not a CLI or web session.
+session_py = os.path.join(hermes_home, 'gateway', 'session.py')
+if os.path.isfile(session_py):
+    content = open(session_py, encoding='utf-8').read()
+    if 'NAPCAT' in content or 'napcat' in content:
+        print("  [3e] session.py 已有 napcat 条目，跳过")
+    else:
+        napcat_branch = '            elif platform == Platform.NAPCAT:\n                ctx["platform_type"] = "qq_chat"\n'
+        # Insert after QQBOT branch if present
+        for anchor in [
+            '            elif platform == Platform.QQBOT:\n',
+            'elif platform == Platform.QQBOT:\n',
+        ]:
+            if anchor in content:
+                content = content.replace(anchor, anchor + napcat_branch, 1)
+                open(session_py, 'w', encoding='utf-8').write(content)
+                print("  [3e] session.py Platform.NAPCAT 分支插入成功")
+                any_patched = True
+                break
+        else:
+            print("  [3e] 跳过：未找到 QQBOT 锚点，session.py 结构不匹配（可选补丁）")
+else:
+    print("  [3e] 跳过：未找到 session.py（可选补丁）")
 
 # === 最终验证 ===
 errors = []

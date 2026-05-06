@@ -45,7 +45,7 @@ class TestSlidingWindow:
     def test_expired_entries_pruned(self):
         w = _SlidingWindow(window_seconds=0.05)  # 50 ms window
         w.add(10)
-        time.sleep(0.06)
+        time.sleep(0.12)  # 120 ms — well past the 50 ms window
         assert w.total() == 0  # expired
 
     def test_partial_expiry(self):
