@@ -399,16 +399,25 @@ else:
         )
         print("  [2/3] 检测到旧版 _setup_napcat()（缺少 NAPCAT_WS_MODE），已移除准备更新")
 
-    # Insert at preferred anchor, then fallback to append
-    if 'def _setup_signal' in content:
-        content = content.replace('def _setup_signal', setup_napcat_func + 'def _setup_signal', 1)
-        print("  [2/3] _setup_napcat() 函数插入成功（_setup_signal 之前）")
-    elif 'def _setup_platform' in content:
-        content = content.replace('def _setup_platform', setup_napcat_func + 'def _setup_platform', 1)
-        print("  [2/3] _setup_napcat() 函数插入成功（_setup_platform 之前）")
-    else:
-        content += setup_napcat_func
-        print("  [2/3] _setup_napcat() 函数插入成功（末尾兜底）")
+    # Insert at safe anchor points (avoid breaking if/else blocks)
+    # Preferred: after the last top-level function before class Gateway
+    inserted = False
+    for anchor in [
+        'class Gateway:',           # Hermes ≥ 0.11
+        'class HermesGateway:',     # older versions
+    ]:
+        if anchor in content:
+            idx = content.find(anchor)
+            # Insert right before the class definition
+            content = content[:idx] + setup_napcat_func + content[idx:]
+            print("  [2/3] _setup_napcat() 函数插入成功（class 之前）")
+            inserted = True
+            break
+
+    if not inserted:
+        # Fallback: append to end of file (safest option)
+        content = content.rstrip() + '\n\n' + setup_napcat_func
+        print("  [2/3] _setup_napcat() 函数插入成功（文件末尾兜底）")
 
 # ════════════════════════════════════════════════════════════════
 # Insert 3: routing branch inside the platform dispatch block
@@ -439,15 +448,15 @@ else:
             inserted = True
             break
 
-    # Anchor b: before _setup_standard_platform / _setup_platform — Hermes 0.10.x
+    # Anchor b: before else block that calls _setup_standard_platform / _setup_platform — Hermes 0.10.x
     if not inserted:
         for anchor in [
-            '            _setup_standard_platform(platform)\n',
-            '            _setup_platform(platform)\n',
+            '        else:\n            _setup_standard_platform(platform)\n',
+            '        else:\n            _setup_platform(platform)\n',
         ]:
             if anchor in content:
                 content = content.replace(anchor, NAPCAT_ROUTE + anchor, 1)
-                print(f"  [3/3] 路由分支插入成功（{anchor.strip()} 之前，0.10.x 兜底）")
+                print(f"  [3/3] 路由分支插入成功（else 块之前，0.10.x 兜底）")
                 inserted = True
                 break
 
@@ -633,22 +642,31 @@ async def _send_napcat(pconfig, chat_id: str, message: str) -> dict:
             print("  [3b-3] 警告：未找到 dispatch 函数，跳过 dispatch 插入")
     if dispatch_fn_anchor and (dispatch_fn_anchor == '__dispatch_chain__' or 'elif platform == Platform.NAPCAT:' not in content.split(dispatch_fn_anchor)[1]):
         inserted = False
-        # Try: insert after qqbot dispatch
-        for pattern in [
-            'elif platform == Platform.QQBOT:\n',
-            'elif Platform.QQBOT == platform:\n',
-            'elif Platform.QQBOT:\n',
-        ]:
-            if pattern in content:
-                content = content.replace(pattern, pattern + napcat_dispatch, 1)
-                print("  [3b-3] napcat dispatch 插入成功（qqbot 之后）")
-                any_patched = inserted = True
-                break
+        # Try: insert before "not yet implemented" else clause (most reliable anchor)
+        else_anchor = 'else:\n            result = {"error": f"Direct sending not yet implemented for {platform.value}"'
+        if else_anchor in content:
+            content = content.replace(else_anchor, napcat_dispatch + '        ' + else_anchor, 1)
+            print("  [3b-3] napcat dispatch 插入成功（else 之前）")
+            any_patched = inserted = True
+
         if not inserted:
-            # Fallback: insert before "not yet implemented" else clause
+            # Fallback: insert after qqbot dispatch
+            for pattern in [
+                'elif platform == Platform.QQBOT:\n',
+                'elif Platform.QQBOT == platform:\n',
+                'elif Platform.QQBOT:\n',
+            ]:
+                if pattern in content:
+                    content = content.replace(pattern, pattern + napcat_dispatch, 1)
+                    print("  [3b-3] napcat dispatch 插入成功（qqbot 之后）")
+                    any_patched = inserted = True
+                    break
+
+        if not inserted:
+            # Second fallback: regex for any else-with-error pattern
             import re
             fallback = re.search(
-                r'(\n\s+else:\s*\n\s+return\s+[^\n]*not yet implemented[^\n]*)',
+                r'(\n\s+else:\s*\n\s+result\s*=\s*\{[^}]*not yet implemented[^}]*\})',
                 content
             )
             if fallback:
