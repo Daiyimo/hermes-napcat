@@ -1,0 +1,124 @@
+# NapCat + Hermes Docker Compose 配置示例
+
+## 单机部署（推荐）
+
+同一台设备上 NapCat + Hermes 各一个容器。
+
+### docker-compose.yml
+
+```yaml
+version: "3.8"
+
+services:
+  napcat:
+    image: <your-napcat-image>    # 替换为实际的 NapCat 镜像
+    container_name: napcat
+    ports:
+      - "3000:3000"    # HTTP API — Hermes 需要调用
+      # WS Server 3001 不需要映射到宿主机，容器间内网即可
+    environment:
+      - QQ=<你的QQ号>
+      - PASSWORD=<你的QQ密码>
+    restart: unless-stopped
+
+  hermes:
+    image: <your-hermes-image>    # 替换为实际的 Hermes 镜像
+    container_name: hermes
+    environment:
+      - NAPCAT_HTTP_URL=http://napcat:3000
+      - NAPCAT_WS_URL=ws://napcat:3001
+      - NAPCAT_WS_MODE=forward
+      # 其他环境变量根据 hermes gateway setup 生成
+    depends_on:
+      - napcat
+    restart: unless-stopped
+```
+
+---
+
+## 多机部署
+
+NapCat 和 Hermes 部署在不同服务器上。
+
+### NapCat 服务器配置
+
+```yaml
+services:
+  napcat:
+    image: <your-napcat-image>
+    ports:
+      - "3000:3000"
+      - "3001:3001"   # 如果需要外部可访问的 WS Server
+    environment:
+      - QQ=<你的QQ号>
+```
+
+### Hermes 服务器配置
+
+```yaml
+services:
+  hermes:
+    image: <your-hermes-image>
+    environment:
+      - NAPCAT_HTTP_URL=http://<napcat-server-ip>:3000
+      - NAPCAT_WS_URL=ws://<napcat-server-ip>:3001
+      - NAPCAT_WS_MODE=forward
+```
+
+> ⚠️ 确保 NapCat 服务器的防火墙允许 3000 和 3001 端口的入站连接。
+
+---
+
+## 反向模式部署
+
+当需要 NapCat 主动连接适配器时使用（例如跨网络、NAT 穿透等场景）。
+
+```yaml
+version: "3.8"
+
+services:
+  napcat:
+    image: <your-napcat-image>
+    ports:
+      - "3000:3000"
+    environment:
+      - QQ=<你的QQ号>
+    # NapCat 内部配置 websocketClients 指向 hermes 容器
+
+  hermes:
+    image: <your-hermes-image>
+    ports:
+      - "3002:3002"    # WS Server 暴露给 NapCat 连接
+    environment:
+      - NAPCAT_HTTP_URL=http://napcat:3000
+      - NAPCAT_WS_URL=ws://hermes:3002
+      - NAPCAT_WS_MODE=reverse
+    depends_on:
+      - napcat
+```
+
+NapCat 侧配置示例：
+```json
+{
+  "network": {
+    "websocketClients": [
+      {
+        "name": "hermesReverseWs",
+        "enable": true,
+        "url": "ws://hermes:3002",
+        "messagePostFormat": "array"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 使用说明
+
+1. 将 `<your-napcat-image>` 和 `<your-hermes-image>` 替换为实际的镜像名
+2. 将 `<napcat-server-ip>` 替换为 NapCat 服务器的 IP 地址或域名
+3. 配置 Hermes 环境变量（运行 `hermes gateway setup` 生成）
+4. 启动：`docker-compose up -d`
+5. 查看日志：`docker-compose logs -f`

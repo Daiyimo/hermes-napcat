@@ -1,0 +1,25 @@
+{
+  "network": {
+    "httpServers": [
+      {
+        "name": "hermesHttp",
+        "enable": true,
+        "port": 3000,
+        "host": "0.0.0.0",
+        "messagePostFormat": "array",
+        "token": ""
+      }
+    ],
+    "websocketClients": [
+      {
+        "name": "hermesReverseWs",
+        "enable": true,
+        "url": "ws://127.0.0.1:3002",
+        "messagePostFormat": "array",
+        "reportSelfMessage": false,
+        "token": "",
+        "reconnectInterval": 5000
+      }
+    ]
+  }
+}
