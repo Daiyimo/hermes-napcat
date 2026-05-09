@@ -1,0 +1,11 @@
+# 强制以下文件在所有平台使用 LF 行尾，防止 Windows autocrlf 污染 shell 脚本
+*.sh        text eol=lf
+*.py        text eol=lf
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.cfg       text eol=lf
+*.toml      text eol=lf
+*.ini       text eol=lf
