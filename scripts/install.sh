@@ -98,11 +98,102 @@ check_python_deps() {
         warn "缺少 Python 依赖：${missing[*]}"
         info "尝试自动安装..."
 
-        # Try pip install
-        if "$PYTHON_BIN" -m pip install --quiet "${missing[@]}" 2>/dev/null; then
-            success "依赖安装成功：${missing[*]}"
+        local install_success=false
+
+        # 方法 1: 尝试 pip install（最常用）
+        if "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+            info "使用 pip 安装..."
+            if "$PYTHON_BIN" -m pip install --quiet "${missing[@]}" 2>/dev/null; then
+                success "依赖安装成功：${missing[*]}"
+                install_success=true
+            else
+                warn "pip 安装失败"
+            fi
         else
-            error "自动安装失败，请手动运行：\n  $PYTHON_BIN -m pip install ${missing[*]}"
+            warn "pip 不可用"
+        fi
+
+        # 方法 2: 尝试 pip3（如果 python3 对应 pip3）
+        if [ "$install_success" = false ] && command -v pip3 >/dev/null 2>&1; then
+            info "尝试使用 pip3 安装..."
+            if pip3 install --quiet "${missing[@]}" 2>/dev/null; then
+                success "依赖安装成功：${missing[*]}"
+                install_success=true
+            else
+                warn "pip3 安装失败"
+            fi
+        fi
+
+        # 方法 3: 尝试 apt-get（Debian/Ubuntu 系统）
+        if [ "$install_success" = false ] && command -v apt-get >/dev/null 2>&1; then
+            info "尝试使用 apt-get 安装..."
+            local apt_packages=()
+            for dep in "${missing[@]}"; do
+                # 将 Python 包名转换为 apt 包名
+                case "$dep" in
+                    websockets) apt_packages+=("python3-websockets") ;;
+                    httpx) apt_packages+=("python3-httpx") ;;
+                    *) apt_packages+=("python3-${dep}") ;;
+                esac
+            done
+
+            if sudo apt-get update -qq && sudo apt-get install -y -qq "${apt_packages[@]}" 2>/dev/null; then
+                success "依赖安装成功：${apt_packages[*]}"
+                install_success=true
+            else
+                warn "apt-get 安装失败"
+            fi
+        fi
+
+        # 方法 4: 尝试 yum（CentOS/RHEL 系统）
+        if [ "$install_success" = false ] && command -v yum >/dev/null 2>&1; then
+            info "尝试使用 yum 安装..."
+            local yum_packages=()
+            for dep in "${missing[@]}"; do
+                yum_packages+=("python3-${dep}")
+            done
+
+            if sudo yum install -y -q "${yum_packages[@]}" 2>/dev/null; then
+                success "依赖安装成功：${yum_packages[*]}"
+                install_success=true
+            else
+                warn "yum 安装失败"
+            fi
+        fi
+
+        # 如果所有方法都失败
+        if [ "$install_success" = false ]; then
+            echo ""
+            error "自动安装依赖失败。请手动安装以下 Python 包："
+            echo ""
+            echo "  方法 1（推荐）: 使用 pip"
+            echo "    $PYTHON_BIN -m pip install ${missing[*]}"
+            echo ""
+            echo "  方法 2: 使用 pip3"
+            echo "    pip3 install ${missing[*]}"
+            echo ""
+            echo "  方法 3: 使用 apt-get (Debian/Ubuntu)"
+            echo "    sudo apt-get update && sudo apt-get install python3-websockets python3-httpx"
+            echo ""
+            echo "  方法 4: 使用 yum (CentOS/RHEL)"
+            echo "    sudo yum install python3-websockets python3-httpx"
+            echo ""
+            echo "  方法 5: 使用 conda"
+            echo "    conda install websockets httpx"
+            echo ""
+
+            # 询问是否继续（仅在交互模式下）
+            if [ "$IS_INTERACTIVE" = true ]; then
+                read -r -p "$(echo -e "${YELLOW}是否继续安装？(y/N)${NC}: ")" continue_install
+                if [ "$continue_install" != "y" ] && [ "$continue_install" != "Y" ]; then
+                    error "安装已取消。请先安装依赖后重试。"
+                else
+                    warn "继续安装，但适配器可能无法正常工作"
+                fi
+            else
+                # 非交互模式下，给出警告但继续
+                warn "非交互模式：继续安装，但适配器可能无法正常工作"
+            fi
         fi
     else
         success "Python 依赖检查通过（websockets, httpx）"
@@ -955,13 +1046,120 @@ fi
 
 # ── Done ────────────────────────────────────────────────────────
 echo ""
-success "安装完成！"
+success "适配器安装完成！"
 echo ""
-echo "  请按顺序执行以下命令："
+
+# ── 自动配置 .env 文件 ──────────────────────────────────────────
+ENV_FILE="$HERMES_HOME/gateway/platforms/napcat/config/.env"
+ENV_EXAMPLE="$NAPCAT_DIR/config/.env.example"
+
+if [ ! -f "$ENV_FILE" ]; then
+    info "检测到 .env 配置文件不存在，正在自动创建..."
+
+    # 如果存在 .env.example，复制一份作为基础
+    if [ -f "$ENV_EXAMPLE" ]; then
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        success "已从 .env.example 创建配置文件: $ENV_FILE"
+    else
+        # 创建基础配置文件
+        cat > "$ENV_FILE" <<'ENVEOF'
+# NapCat + Hermes 适配器环境变量配置
+
+# ========== 必填配置 ==========
+
+# NapCat HTTP API 地址（默认: http://127.0.0.1:3000）
+NAPCAT_HTTP_URL=http://127.0.0.1:3000
+
+# NapCat WebSocket 地址（默认: ws://127.0.0.1:3001）
+NAPCAT_WS_URL=ws://127.0.0.1:3001
+
+# WebSocket 模式：forward（适配器连接 NapCat，默认）或 reverse（NapCat 连接适配器）
+NAPCAT_WS_MODE=forward
+
+# ========== 可选配置 ==========
+
+# NapCat 访问令牌（与 NapCat Server 配置中 token 字段一致，未配置则留空）
+# NAPCAT_TOKEN=
+
+# 允许所有用户（未配置白名单时等同于允许所有人）
+# NAPCAT_ALLOW_ALL_USERS=true
+
+# 允许私聊的 QQ 号（逗号分隔，留空则不限制）
+# NAPCAT_ALLOWED_USERS=
+
+# 群聊中允许触发的 QQ 号（逗号分隔，优先级高于全局名单）
+# NAPCAT_GROUP_ALLOWED_USERS=
+
+# 管理员 QQ 号（允许执行 /mute /kick /ban 等命令，多个用逗号分隔）
+# NAPCAT_ADMIN_USERS=
+
+# 默认投递目标（QQ 号或群号，用于定时任务）
+# NAPCAT_HOME_CHANNEL=
+
+# 群聊是否需要 @机器人 才触发（true/false，默认 true）
+# NAPCAT_REQUIRE_MENTION=true
+
+# 是否启用处理状态贴表情（思考 → 👍/😡，true/false，默认 true）
+# NAPCAT_ENABLE_REACTIONS=true
+
+# 回复引用模式：off（不引用）、first（仅首段引用）、all（全部引用）
+# NAPCAT_REPLY_MODE=off
+
+# ========== Hermes 配置 ==========
+
+# 日志级别：DEBUG、INFO、WARNING、ERROR
+HERMES_LOG_LEVEL=INFO
+ENVEOF
+
+        success "已创建基础配置文件: $ENV_FILE"
+    fi
+
+    echo ""
+    info "配置文件已创建，包含默认值。"
+    info "如需修改配置，请编辑: $ENV_FILE"
+    echo ""
+
+    # 询问是否立即配置（仅在交互模式下）
+    if [ "$IS_INTERACTIVE" = true ]; then
+        read -r -p "$(echo -e "${CYAN}是否现在配置 NapCat？(Y/n)${NC}: ")" config_now
+        if [ "${config_now:-Y}" != "n" ] && [ "${config_now:-Y}" != "N" ]; then
+            info "启动快速配置向导..."
+            if [ -f "$NAPCAT_DIR/scripts/quick-setup-env.sh" ]; then
+                bash "$NAPCAT_DIR/scripts/quick-setup-env.sh" "$HERMES_HOME"
+            else
+                warn "快速配置脚本不存在，请手动编辑 $ENV_FILE"
+            fi
+        fi
+    fi
+else
+    info "配置文件已存在: $ENV_FILE"
+    echo ""
+fi
+
+# ── 启动 Gateway ────────────────────────────────────────────────
 echo ""
-echo "    1. 重启 gateway 使补丁生效："
-echo "       hermes gateway restart"
+info "正在重启 Gateway 使补丁生效..."
+
+# 尝试重启 gateway
+if command -v hermes >/dev/null 2>&1; then
+    hermes gateway restart 2>/dev/null || warn "Gateway 重启失败，请手动运行: hermes gateway restart"
+else
+    warn "hermes 命令不可用，请手动重启 Gateway"
+fi
+
 echo ""
-echo "    2. 运行配置向导，选择 NapCat (QQ)："
-echo "       hermes gateway setup"
+success "安装和配置完成！"
+echo ""
+echo "  后续步骤："
+echo ""
+echo "    1. 确保 NapCat 服务已启动并登录 QQ 账号"
+echo ""
+echo "    2. 如需修改配置，编辑:"
+echo "       $ENV_FILE"
+echo ""
+echo "    3. 启动 Hermes Gateway:"
+echo "       hermes gateway"
+echo ""
+echo "    4. （可选）运行诊断脚本检查配置:"
+echo "       bash $NAPCAT_DIR/scripts/diagnose.sh"
 echo ""
