@@ -779,28 +779,6 @@ if config_yaml:
 else:
     print("  [3c] 警告：未找到 config.yaml，请手动添加 napcat 到 platform_toolsets")
 
-# ── 3c2: Ensure platforms.napcat in config.yaml (gateway needs this to activate the adapter) ──
-if config_yaml:
-    import re as _re
-    _content = open(config_yaml, encoding='utf-8').read()
-    # Check if napcat already exists under a top-level platforms: key
-    _plat = _re.search(r'^platforms:\s*\n(.*?)(?=^[a-z]|\Z)', _content, _re.MULTILINE | _re.DOTALL)
-    if _plat and 'napcat:' in _plat.group(1):
-        print(f"  [3c2] platforms.napcat 已启用，跳过")
-    elif _re.search(r'^platforms:', _content, _re.MULTILINE):
-        _new = _re.sub(
-            r'^(platforms:\s*\n)',
-            r'\1  napcat:\n    enabled: true\n',
-            _content, count=1, flags=_re.MULTILINE
-        )
-        open(config_yaml, 'w', encoding='utf-8').write(_new)
-        print(f"  [3c2] 已在 platforms 中添加 napcat")
-        any_patched = True
-    else:
-        with open(config_yaml, 'a', encoding='utf-8') as f:
-            f.write('\nplatforms:\n  napcat:\n    enabled: true\n')
-        print(f"  [3c2] 已添加 platforms.napcat → {config_yaml}")
-        any_patched = True
 
 # ── 3d: Patch prompt_builder.py (PLATFORM_HINTS) ──
 # Without this, the LLM has no QQ-specific context and may treat
