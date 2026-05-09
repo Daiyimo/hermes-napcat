@@ -733,12 +733,21 @@ if config_yaml:
     if 'napcat:' in content and 'hermes-napcat' in content:
         print(f"  [3c] {config_yaml} 已有 napcat 配置，跳过")
     else:
-        old = '  qqbot:\n  - hermes-qqbot'
-        new = '  qqbot:\n  - hermes-qqbot\n  napcat:\n  - hermes-napcat'
-        if old in content:
-            content = content.replace(old, new, 1)
+        # Support both block style (  qqbot:\n  - hermes-qqbot)
+        # and inline style (  qqbot: [hermes-qqbot]) used by the default config.yaml
+        block_old   = '  qqbot:\n  - hermes-qqbot'
+        block_new   = '  qqbot:\n  - hermes-qqbot\n  napcat:\n  - hermes-napcat'
+        inline_old  = '  qqbot: [hermes-qqbot]'
+        inline_new  = '  qqbot: [hermes-qqbot]\n  napcat: [hermes-napcat]'
+        if block_old in content:
+            content = content.replace(block_old, block_new, 1)
             open(config_yaml, 'w', encoding='utf-8').write(content)
-            print(f"  [3c] {config_yaml} napcat 配置插入成功")
+            print(f"  [3c] {config_yaml} napcat 配置插入成功（块格式）")
+            any_patched = True
+        elif inline_old in content:
+            content = content.replace(inline_old, inline_new, 1)
+            open(config_yaml, 'w', encoding='utf-8').write(content)
+            print(f"  [3c] {config_yaml} napcat 配置插入成功（内联格式）")
             any_patched = True
         else:
             print(f"  [3c] 警告：{config_yaml} 中未找到 qqbot 锚点，请手动添加 napcat")
