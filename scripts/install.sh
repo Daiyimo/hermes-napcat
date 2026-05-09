@@ -733,24 +733,49 @@ if config_yaml:
     if 'napcat:' in content and 'hermes-napcat' in content:
         print(f"  [3c] {config_yaml} 已有 napcat 配置，跳过")
     else:
-        # Support both block style (  qqbot:\n  - hermes-qqbot)
-        # and inline style (  qqbot: [hermes-qqbot]) used by the default config.yaml
-        block_old   = '  qqbot:\n  - hermes-qqbot'
-        block_new   = '  qqbot:\n  - hermes-qqbot\n  napcat:\n  - hermes-napcat'
-        inline_old  = '  qqbot: [hermes-qqbot]'
-        inline_new  = '  qqbot: [hermes-qqbot]\n  napcat: [hermes-napcat]'
-        if block_old in content:
-            content = content.replace(block_old, block_new, 1)
+        # Detect qqbot entry format (inline / block / any indent) and mirror it for napcat.
+        # Handles:
+        #   qqbot: [hermes-qqbot]              ← inline
+        #   qqbot: [hermes-qqbot, other]       ← inline multi
+        #   qqbot:\n  - hermes-qqbot           ← block 2-space
+        #   qqbot:\n    - hermes-qqbot         ← block 4-space
+        import re as _re3c
+        _m = _re3c.search(
+            r'([ \t]*)qqbot[ \t]*:[ \t]*(\[[^\]\n]*\]|(?:\n[ \t]+-[^\n]*)+)',
+            content
+        )
+        if _m:
+            _indent = _m.group(1)
+            _val    = _m.group(2)
+            if _val.lstrip().startswith('['):
+                # Inline format — always write a clean single-item inline entry
+                _napcat = f'{_indent}napcat: [hermes-napcat]'
+            else:
+                # Block format — detect list-item indentation from qqbot's own items
+                _li_m   = _re3c.match(r'\n([ \t]+)-', _val)
+                _li     = _li_m.group(1) if _li_m else _indent + '  '
+                _napcat = f'{_indent}napcat:\n{_li}- hermes-napcat'
+            content = content[:_m.end()] + '\n' + _napcat + content[_m.end():]
             open(config_yaml, 'w', encoding='utf-8').write(content)
-            print(f"  [3c] {config_yaml} napcat 配置插入成功（块格式）")
-            any_patched = True
-        elif inline_old in content:
-            content = content.replace(inline_old, inline_new, 1)
-            open(config_yaml, 'w', encoding='utf-8').write(content)
-            print(f"  [3c] {config_yaml} napcat 配置插入成功（内联格式）")
+            print(f"  [3c] {config_yaml} napcat 配置插入成功")
             any_patched = True
         else:
-            print(f"  [3c] 警告：{config_yaml} 中未找到 qqbot 锚点，请手动添加 napcat")
+            # Fallback 1: qqbot not found — append to end of platform_toolsets block
+            _pt = _re3c.search(r'^platform_toolsets:\s*\n', content, _re3c.MULTILINE)
+            if _pt:
+                _after = content[_pt.end():]
+                _end_m = _re3c.search(r'^[^ \t#\n]', _after, _re3c.MULTILINE)
+                _ins   = _pt.end() + (_end_m.start() if _end_m else len(_after))
+                content = content[:_ins] + '  napcat: [hermes-napcat]\n' + content[_ins:]
+                open(config_yaml, 'w', encoding='utf-8').write(content)
+                print(f"  [3c] {config_yaml} napcat 追加到 platform_toolsets 末尾")
+                any_patched = True
+            else:
+                # Fallback 2: no platform_toolsets section at all — create it
+                with open(config_yaml, 'a', encoding='utf-8') as _f:
+                    _f.write('\nplatform_toolsets:\n  napcat: [hermes-napcat]\n')
+                print(f"  [3c] 已创建 platform_toolsets.napcat → {config_yaml}")
+                any_patched = True
 else:
     print("  [3c] 警告：未找到 config.yaml，请手动添加 napcat 到 platform_toolsets")
 
