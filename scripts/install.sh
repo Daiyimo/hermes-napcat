@@ -1136,30 +1136,19 @@ else
     echo ""
 fi
 
-# ── 启动 Gateway ────────────────────────────────────────────────
 echo ""
-info "正在重启 Gateway 使补丁生效..."
-
-# 尝试重启 gateway
-if command -v hermes >/dev/null 2>&1; then
-    hermes gateway restart 2>/dev/null || warn "Gateway 重启失败，请手动运行: hermes gateway restart"
-else
-    warn "hermes 命令不可用，请手动重启 Gateway"
-fi
-
-echo ""
-success "安装和配置完成！"
+success "适配器安装完成！"
 echo ""
 echo "  后续步骤："
 echo ""
 echo "    1. 确保 NapCat 服务已启动并登录 QQ 账号"
 echo ""
-echo "    2. 如需修改配置，编辑:"
-echo "       $ENV_FILE"
+echo "    2. 配置 NapCat 连接参数（HTTP/WS 地址、Token 等）："
+echo -e "       ${CYAN}hermes gateway setup${NC}"
 echo ""
-echo "    3. 启动 Hermes Gateway:"
-echo "       hermes gateway"
+echo "    3. 重启 Gateway 使补丁生效："
+echo -e "       ${CYAN}hermes gateway restart${NC}"
 echo ""
-echo "    4. （可选）运行诊断脚本检查配置:"
+echo "    4. （可选）运行诊断脚本检查配置："
 echo "       bash $NAPCAT_DIR/scripts/diagnose.sh"
 echo ""
