@@ -1008,13 +1008,60 @@ if os.path.isfile(session_py):
 else:
     print("  [3g] 跳过：未找到 session.py（可选补丁）")
 
+# ── 3h: Patch gateway/config.py (_apply_env_overrides) ──
+# CRITICAL: Without this block, NapCat is never marked enabled=True at
+# gateway startup, so GatewayRunner skips it entirely regardless of .env.
+config_py = os.path.join(hermes_home, 'gateway', 'config.py')
+if os.path.isfile(config_py):
+    content = open(config_py, encoding='utf-8').read()
+    if 'napcat_http_url = os.getenv("NAPCAT_HTTP_URL")' in content:
+        print("  [3h] _apply_env_overrides 已有 NapCat 块，跳过")
+    else:
+        napcat_env_block = '''
+    # NapCat (QQ via OneBot 11)
+    napcat_http_url = os.getenv("NAPCAT_HTTP_URL")
+    napcat_ws_url = os.getenv("NAPCAT_WS_URL")
+    if napcat_http_url and napcat_ws_url:
+        if Platform.NAPCAT not in config.platforms:
+            config.platforms[Platform.NAPCAT] = PlatformConfig()
+        config.platforms[Platform.NAPCAT].enabled = True
+
+'''
+        inserted = False
+        for anchor in [
+            '    # Session settings',
+            '    # Scheduling',
+            '    # Cron',
+        ]:
+            if anchor in content:
+                content = content.replace(anchor, napcat_env_block + anchor, 1)
+                open(config_py, 'w', encoding='utf-8').write(content)
+                print(f"  [3h] _apply_env_overrides NapCat 块插入成功（锚点：{anchor.strip()!r}）")
+                any_patched = inserted = True
+                break
+
+        if not inserted:
+            # Fallback: append before the closing line of _apply_env_overrides
+            import re as _re3h
+            m = _re3h.search(r'(def _apply_env_overrides\b.*?)(\n\ndef |\Z)', content, _re3h.DOTALL)
+            if m:
+                insert_pos = m.end(1)
+                content = content[:insert_pos] + '\n' + napcat_env_block + content[insert_pos:]
+                open(config_py, 'w', encoding='utf-8').write(content)
+                print("  [3h] _apply_env_overrides NapCat 块插入成功（函数末尾兜底）")
+                any_patched = True
+            else:
+                print("  [3h] 警告：未找到插入点，请手动在 _apply_env_overrides() 末尾添加 NapCat 块")
+else:
+    print("  [3h] 跳过：未找到 gateway/config.py")
+
 # === 最终验证 ===
 errors = []
 for check_file, patterns in [
     (platforms_py, ['"napcat"']),
     (send_msg_py, ['"napcat": Platform.NAPCAT', 'def _send_napcat(', 'elif platform == Platform.NAPCAT:']),
     (config_yaml, ['napcat:', 'hermes-napcat']),
-    (config_py, ['NAPCAT = "napcat"']),
+    (config_py, ['NAPCAT = "napcat"', 'napcat_http_url = os.getenv("NAPCAT_HTTP_URL")']),
     (run_py, ['Platform.NAPCAT:', 'NAPCAT_ALLOWED_USERS']),
 ]:
     if check_file and os.path.isfile(check_file):
