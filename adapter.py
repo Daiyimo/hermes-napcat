@@ -18,6 +18,29 @@ Configuration via environment variables:
     NAPCAT_REQUIRE_MENTION   - Set to "true" to require @mention in group chats (default: true)
     NAPCAT_ENABLE_REACTIONS  - Set to "false" to disable emoji reactions (default: true)
     NAPCAT_REPLY_MODE       - "off" = never quote received message (default), "first", "all"
+
+Per-chat configuration via config.yaml platforms.napcat.extra:
+    channel_prompts:        - Dict mapping chat_id -> ephemeral system prompt
+                              (applied at API call time, overrides default system prompt)
+    channel_skill_bindings: - List of binding rules:
+                              {id: chat_id, skill: "skill_name"} or {id: chat_id, skills: ["skill1", "skill2"]}
+                              Auto-loads specified skills for the chat when a message arrives
+
+Example config.yaml:
+    platforms:
+      napcat:
+        enabled: true
+        token: "your_token"
+        extra:
+          http_url: "http://127.0.0.1:3000"
+          ws_url: "ws://127.0.0.1:3001"
+          channel_prompts:
+            "123456789": "You are a helpful QQ bot in group 123456789. Be friendly and concise."
+          channel_skill_bindings:
+            - id: "123456789"
+              skills: ["web-search", "calculator"]
+            - id: "987654321"
+              skill: "translator"
 """
 
 from __future__ import annotations
@@ -58,6 +81,8 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
     cache_audio_from_url,
     cache_image_from_url,
+    resolve_channel_prompt,
+    resolve_channel_skills,
 )
 from gateway.platforms.helpers import strip_markdown
 
@@ -906,6 +931,13 @@ class NapCatAdapter(BasePlatformAdapter):
             user_name=user_name,
         )
 
+        # ------------------------------------------------------------------
+        # Resolve channel-specific prompts and skills
+        # ------------------------------------------------------------------
+        config_extra = self.config.extra or {}
+        channel_prompt = resolve_channel_prompt(config_extra, chat_id)
+        auto_skills = resolve_channel_skills(config_extra, chat_id)
+
         # Build event
         event = MessageEvent(
             text=text,
@@ -916,6 +948,8 @@ class NapCatAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=reply_to_id,
+            channel_prompt=channel_prompt,
+            auto_skill=auto_skills,
         )
 
         logger.info(
