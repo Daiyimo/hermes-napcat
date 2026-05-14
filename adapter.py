@@ -81,9 +81,21 @@ from gateway.platforms.base import (
     _ssrf_redirect_guard,
     cache_audio_from_url,
     cache_image_from_url,
-    resolve_channel_prompt,
-    resolve_channel_skills,
 )
+
+# resolve_channel_prompt / resolve_channel_skills were added in a newer version
+# of hermes-agent.  Import them gracefully so this adapter stays compatible
+# with older deployments that don't have these functions yet.
+try:
+    from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
+except ImportError:
+    def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id=None):  # type: ignore[misc]
+        """Fallback: per-channel prompts not supported on this gateway version."""
+        return None
+
+    def resolve_channel_skills(config_extra: dict, channel_id: str, parent_id=None):  # type: ignore[misc]
+        """Fallback: per-channel skill bindings not supported on this gateway version."""
+        return None
 from gateway.platforms.helpers import strip_markdown
 
 from .constants import (
