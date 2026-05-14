@@ -96,6 +96,14 @@ except ImportError:
     def resolve_channel_skills(config_extra: dict, channel_id: str, parent_id=None):  # type: ignore[misc]
         """Fallback: per-channel skill bindings not supported on this gateway version."""
         return None
+
+# Detect whether the installed MessageEvent supports the newer fields so we
+# can build the event kwargs safely on older gateway deployments.
+import dataclasses as _dc
+_MSG_EVENT_FIELDS = {f.name for f in _dc.fields(MessageEvent)} if _dc.is_dataclass(MessageEvent) else set()
+_ME_HAS_AUTO_SKILL    = "auto_skill"    in _MSG_EVENT_FIELDS
+_ME_HAS_CHANNEL_PROMPT = "channel_prompt" in _MSG_EVENT_FIELDS
+
 from gateway.platforms.helpers import strip_markdown
 
 from .constants import (
@@ -1035,7 +1043,7 @@ class NapCatAdapter(BasePlatformAdapter):
         auto_skills = self._resolve_auto_skills(chat_id)
 
         # Build event
-        event = MessageEvent(
+        _event_kwargs: dict = dict(
             text=text,
             message_type=msg_type,
             source=source,
@@ -1044,9 +1052,12 @@ class NapCatAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=reply_to_id,
-            channel_prompt=channel_prompt,
-            auto_skill=auto_skills,
         )
+        if _ME_HAS_CHANNEL_PROMPT:
+            _event_kwargs["channel_prompt"] = channel_prompt
+        if _ME_HAS_AUTO_SKILL:
+            _event_kwargs["auto_skill"] = auto_skills
+        event = MessageEvent(**_event_kwargs)
 
         logger.info(
             "[%s] Message from %s in %s:%s — %s%.50s",
