@@ -52,6 +52,13 @@ for _attr in (
     if not hasattr(_gpb, _attr):
         setattr(_gpb, _attr, type(_attr, (), {}))
 
+# Stub resolve_channel_prompt / resolve_channel_skills — called at module level
+# in adapter.py imports and used inside _handle_message_event.
+if not hasattr(_gpb, "resolve_channel_prompt"):
+    _gpb.resolve_channel_prompt = lambda config_extra, channel_id, parent_id=None: None  # type: ignore[attr-defined]
+if not hasattr(_gpb, "resolve_channel_skills"):
+    _gpb.resolve_channel_skills = lambda config_extra, channel_id, parent_id=None: None  # type: ignore[attr-defined]
+
 _gc = sys.modules["gateway.config"]
 for _attr in ("Platform", "PlatformConfig"):
     if not hasattr(_gc, _attr):

@@ -271,9 +271,90 @@ class NapCatAdapter(BasePlatformAdapter):
         self._allowed_group_users_cache: set | None = None
         self._allow_all_users: bool | None = None
 
+        # Global skills cache (lazy-loaded on first message).
+        # Holds sorted skill names found under ~/.hermes/skills/, or None when
+        # the directory hasn't been scanned yet.  An empty list means the dir
+        # exists but contains no skills.
+        self._global_skills_cache: list[str] | None = None
+
     @property
     def name(self) -> str:
         return "NapCat"
+
+    # ------------------------------------------------------------------
+    # Skills auto-discovery
+    # ------------------------------------------------------------------
+
+    def _discover_global_skills(self) -> list[str]:
+        """Scan ~/.hermes/skills/ and return all installed skill names.
+
+        Walks one level of category directories (e.g. ``creative/``,
+        ``devops/``) and collects every subdirectory that contains a
+        ``SKILL.md`` file, treating that subdirectory name as the skill
+        name.  Results are sorted and cached in ``_global_skills_cache``.
+
+        Returns an empty list when the skills directory does not exist or
+        an error occurs — never raises.
+        """
+        from pathlib import Path
+
+        try:
+            from hermes_constants import get_hermes_home
+            skills_root = get_hermes_home() / "skills"
+        except Exception:
+            skills_root = Path(os.path.expanduser("~/.hermes/skills"))
+
+        if not skills_root.is_dir():
+            return []
+
+        skills: list[str] = []
+        try:
+            for category_dir in skills_root.iterdir():
+                if not category_dir.is_dir() or category_dir.name.startswith("."):
+                    continue
+                for skill_dir in category_dir.iterdir():
+                    if skill_dir.is_dir() and (skill_dir / "SKILL.md").is_file():
+                        skills.append(skill_dir.name)
+        except Exception as exc:
+            logger.debug("[%s] Skills directory scan failed: %s", self._log_tag, exc)
+
+        return sorted(set(skills))
+
+    def _resolve_auto_skills(self, chat_id: str) -> list[str] | None:
+        """Resolve which skills to auto-load for an incoming message.
+
+        Priority order:
+
+        1. ``channel_skill_bindings`` in ``config.extra`` — explicit
+           per-channel configuration always wins (matches Discord/Slack
+           behaviour).
+        2. Global skills discovered from ``~/.hermes/skills/`` — acts as a
+           catch-all so any installed skill is available without extra config.
+
+        Returns ``None`` when no skills are found so the gateway applies its
+        own defaults rather than passing an empty list.
+        """
+        config_extra = self.config.extra or {}
+
+        # 1. Per-channel binding overrides everything else.
+        channel_skills = resolve_channel_skills(config_extra, chat_id)
+        if channel_skills is not None:
+            return channel_skills
+
+        # 2. Lazy-load and cache the global skills list.
+        if self._global_skills_cache is None:
+            self._global_skills_cache = self._discover_global_skills()
+            if self._global_skills_cache:
+                logger.debug(
+                    "[%s] Discovered %d global skill(s): %s",
+                    self._log_tag,
+                    len(self._global_skills_cache),
+                    ", ".join(self._global_skills_cache),
+                )
+            else:
+                logger.debug("[%s] No global skills found in ~/.hermes/skills/", self._log_tag)
+
+        return self._global_skills_cache if self._global_skills_cache else None
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -934,9 +1015,12 @@ class NapCatAdapter(BasePlatformAdapter):
         # ------------------------------------------------------------------
         # Resolve channel-specific prompts and skills
         # ------------------------------------------------------------------
-        config_extra = self.config.extra or {}
-        channel_prompt = resolve_channel_prompt(config_extra, chat_id)
-        auto_skills = resolve_channel_skills(config_extra, chat_id)
+        # channel_prompt: explicit per-channel system prompt from config.extra
+        #   channel_prompts: {"<chat_id>": "You are ..."}
+        # auto_skill: channel_skill_bindings first, then global ~/.hermes/skills/
+        #   channel_skill_bindings: [{id: "<chat_id>", skills: ["skill-a"]}]
+        channel_prompt = resolve_channel_prompt(self.config.extra or {}, chat_id)
+        auto_skills = self._resolve_auto_skills(chat_id)
 
         # Build event
         event = MessageEvent(
